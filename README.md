@@ -172,7 +172,7 @@ UI (отрисовка в главном потоке)
 ### Программные требования для сборки
 - **Visual Studio 2022** или новее
 - **Windows SDK** (последняя версия)
-- **Premake5** (для генерации проектных файлов)
+- **Premake5** v5.0.0-beta7 (для генерации проектных файлов) - [Скачать](https://github.com/premake/premake-core/releases/tag/v5.0.0-beta7)
 - **Git** (для клонирования репозитория)
 
 ## 🚀 Установка
@@ -431,6 +431,14 @@ struct MapObject {
 
 ## 📚 Зависимости
 
+### Инструменты сборки
+
+1. **Premake5** (BSD-3-Clause License)
+   - Версия: v5.0.0-beta7
+   - Использование: Генерация проектных файлов Visual Studio
+   - Расположение: `premake5.exe` (в корне проекта)
+   - Ссылка: https://github.com/premake/premake-core/releases/tag/v5.0.0-beta7
+
 ### Внешние библиотеки
 
 1. **ImGui** (MIT License)
@@ -460,6 +468,7 @@ struct MapObject {
 
 ### Зависимости и их лицензии
 
+- **Premake5**: BSD-3-Clause License
 - **ImGui**: MIT License
 - **War Thunder Localhost Documentation**: GPL-3.0 (используется только как справочный материал)
 
