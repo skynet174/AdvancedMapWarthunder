@@ -3,6 +3,7 @@
 #include "imgui.h"
 #include "imgui_impl_win32.h"
 #include "imgui_impl_dx11.h"
+#include "Translator.h"
 #include <windows.h>
 #include <sstream>
 #include <algorithm>
@@ -1075,9 +1076,12 @@ void ParseHudMsg(const std::string& jsonData) {
                 // Форматируем сообщение
                 if (reason == "NET_PLAYER_DISCONNECT_FROM_GAME") {
                     if (!playerName.empty()) {
-                        msg = playerName + " отключился от игры";
-                    } else {
-                        msg = "Игрок отключился от игры";
+                        char buf[256];
+                        snprintf(buf, sizeof(buf), TR().Get("player_disconnected_fmt").c_str(), playerName.c_str());
+                        msg = buf;
+                    }
+                    else {
+                        msg = TR().Get("player_disconnected_no_name");
                     }
                 } else {
                     // Заменяем подчеркивания на пробелы и делаем первую букву заглавной
@@ -1129,9 +1133,11 @@ void ParseHudMsg(const std::string& jsonData) {
                             // Форматируем сообщение
                             if (reason == "NET_PLAYER_DISCONNECT_FROM_GAME") {
                                 if (!playerName.empty()) {
-                                    msg = playerName + " отключился от игры";
+                                    char buf[256];
+                                    snprintf(buf, sizeof(buf), TR().Get("player_disconnected_fmt").c_str(), playerName.c_str());
+                                    msg = buf;
                                 } else {
-                                    msg = "Игрок отключился от игры";
+                                    msg = TR().Get("player_disconnected_no_name");
                                 }
                             } else {
                                 // Заменяем подчеркивания на пробелы и делаем первую букву заглавной
@@ -1159,7 +1165,12 @@ void ParseHudMsg(const std::string& jsonData) {
                 }
                 
                 if (!foundReason && !playerName.empty()) {
-                    msg = playerName + " потерял связь";
+                    char buf[256];
+                    snprintf(buf, sizeof(buf), TR().Get("player_lost_connection_fmt").c_str(), playerName.c_str());
+                    msg = buf;
+                }
+                else if (!foundReason && playerName.empty()) {
+                    msg = TR().Get("player_lost_connection_no_name");
                 }
             }
         }
@@ -2885,7 +2896,7 @@ void RenderUI()
                 );
                 
                 char tooltip[64];
-                snprintf(tooltip, sizeof(tooltip), "Метка #%d\n[ПКМ для удаления]", mi + 1);
+                snprintf(tooltip, sizeof(tooltip), TR().Get("marker_tooltip_fmt").c_str(), mi + 1);
                 ImGui::SetTooltip(tooltip);
             }
         }
@@ -3553,16 +3564,16 @@ void RenderUI()
             
             // Информация о юните (старый формат)
             char line1[256], line2[256], line3[256], line4[256];
-            snprintf(line1, sizeof(line1), "Юнит: %s", hoveredUnit->icon.c_str());
+            snprintf(line1, sizeof(line1), TR().Get("unit_label_fmt").c_str(), hoveredUnit->icon.c_str());
             debugLines.push_back(line1);
             
-            snprintf(line2, sizeof(line2), "Тип: %s", hoveredUnit->type.c_str());
+            snprintf(line2, sizeof(line2), TR().Get("type_label_fmt").c_str(), hoveredUnit->type.c_str());
             debugLines.push_back(line2);
             
-            snprintf(line3, sizeof(line3), "Квадрат: %s", unitGridCoords.c_str());
+            snprintf(line3, sizeof(line3), TR().Get("grid_label_fmt").c_str(), unitGridCoords.c_str());
             debugLines.push_back(line3);
             
-            snprintf(line4, sizeof(line4), "Позиция в игре: %.1f, %.1f", unitGameX, unitGameY);
+            snprintf(line4, sizeof(line4), TR().Get("position_fmt").c_str(), unitGameX, unitGameY);
             debugLines.push_back(line4);
             
             // Вычисляем расстояние до игрока
@@ -3583,19 +3594,19 @@ void RenderUI()
                 float distance = sqrtf(dx * dx + dy * dy);
                 
                 char line5[256];
-                snprintf(line5, sizeof(line5), "Расстояние до игрока: %.1f м", distance);
+                snprintf(line5, sizeof(line5), TR().Get("distance_to_player_fmt").c_str(), distance);
                 debugLines.push_back(line5);
             }
         } else {
             // Информация о позиции курсора (старый формат)
             char line1[256], line2[256], line3[256];
-            snprintf(line1, sizeof(line1), "Квадрат: %s", gridCoords.c_str());
+            snprintf(line1, sizeof(line1), TR().Get("cursor_grid_fmt").c_str(), gridCoords.c_str());
             debugLines.push_back(line1);
             
-            snprintf(line2, sizeof(line2), "Координата под курсором игровая: %.1f, %.1f", gameX, gameY);
+            snprintf(line2, sizeof(line2), TR().Get("cursor_game_coord_fmt").c_str(), gameX, gameY);
             debugLines.push_back(line2);
             
-            snprintf(line3, sizeof(line3), "Координата под курсором в пикселях: %.0f, %.0f", mouseRelX, mouseRelY);
+            snprintf(line3, sizeof(line3), TR().Get("cursor_pixel_coord_fmt").c_str(), mouseRelX, mouseRelY);
             debugLines.push_back(line3);
         }
         
@@ -3698,15 +3709,15 @@ void RenderUI()
         
         if (!vehicleName.empty()) {
             if (isTank) {
-                ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), "Данные танка: %s", vehicleName.c_str());
+                ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), TR().Get("tank_data_fmt").c_str(), vehicleName.c_str());
             } else {
-                ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), "Данные самолета: %s", vehicleName.c_str());
+                ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), TR().Get("aircraft_data_fmt").c_str(), vehicleName.c_str());
             }
         } else {
             if (isTank) {
-                ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), "Данные танка");
+                ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), TR().Get("tank_data").c_str());
             } else {
-                ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), "Данные самолета");
+                ImGui::TextColored(ImVec4(0.9f, 0.9f, 0.9f, 1.0f), TR().Get("aircraft_data").c_str());
             }
         }
     }
@@ -3753,59 +3764,67 @@ void RenderUI()
                 isTankType = true;
             }
             
-            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Индикаторы:");
+            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), TR().Get("indicators_header").c_str());
             
             // Общие параметры для всех типов техники
             if (g_indicatorsData.speed > 0.0f) {
-                ImGui::Text("Скорость: %.1f", g_indicatorsData.speed);
+                ImGui::Text(TR().Get("speed_data_fmt").c_str(), g_indicatorsData.speed);
             }
             
             if (g_indicatorsData.fuel > 0.0f) {
-                ImGui::Text("Топливо: %.0f", g_indicatorsData.fuel);
+                ImGui::Text(TR().Get("fuel_data_fmt").c_str(), g_indicatorsData.fuel);
             }
             
             if (g_indicatorsData.throttle > 0.0f) {
-                ImGui::Text("Рычаг газа: %.0f%%", g_indicatorsData.throttle * 100.0f);
+                ImGui::Text(TR().Get("throttle_data_fmt").c_str(), g_indicatorsData.throttle * 100.0f);
             }
             
             // Параметры только для самолетов
             if (!isTankType) {
                 if (g_indicatorsData.altitude_hour > 0.0f) {
-                    ImGui::Text("Высота: %.1f м", g_indicatorsData.altitude_hour);
+                    ImGui::Text(TR().Get("altitude_fmt_m").c_str(), g_indicatorsData.altitude_hour);
                 }
                 
                 if (g_indicatorsData.compass >= 0.0f) {
-                    ImGui::Text("Компас: %.1f°", g_indicatorsData.compass);
+                    ImGui::Text(TR().Get("compass_data_fmt").c_str(), g_indicatorsData.compass);
                 }
                 
                 if (g_indicatorsData.mach > 0.0f) {
-                    ImGui::Text("Число Маха: %.2f", g_indicatorsData.mach);
+                    ImGui::Text(TR().Get("mach_data_fmt").c_str(), g_indicatorsData.mach);
                 }
                 
                 if (g_indicatorsData.g_meter != 0.0f) {
-                    ImGui::Text("Перегрузка: %.2f", g_indicatorsData.g_meter);
+                    ImGui::Text(TR().Get("g_meter_data_fmt").c_str(), g_indicatorsData.g_meter);
                 }
                 
                 // Шасси: 0 = выпущено, 50 = в процессе, 100 = убрано
                 float gearsPercent = g_indicatorsData.gears * 100.0f;
                 if (gearsPercent > 0.01f) {
-                    const char* gearsStatus = "";
+                    std::string gearsStatus;
+
                     if (gearsPercent < 10.0f) {
-                        gearsStatus = " (выпущено)";
-                    } else if (gearsPercent > 90.0f) {
-                        gearsStatus = " (убрано)";
-                    } else {
-                        gearsStatus = " (в процессе)";
+                        gearsStatus = TR().Get("gear_released_state");
                     }
-                    ImGui::Text("Шасси: %.0f%%%s", gearsPercent, gearsStatus);
+                    else if (gearsPercent > 90.0f) {
+                        gearsStatus = TR().Get("gear_retracted_state");
+                    }
+                    else {
+                        gearsStatus = TR().Get("gear_in_progress_state");
+                    }
+
+                    ImGui::Text(
+                        TR().Get("gears_status_fmt").c_str(),
+                        gearsPercent,
+                        gearsStatus.c_str()
+                    );
                 }
                 
                 if (g_indicatorsData.flaps > 0.01f) {
-                    ImGui::Text("Закрылки: %.0f%%", g_indicatorsData.flaps * 100.0f);
+                    ImGui::Text(TR().Get("flaps_fmt").c_str(), g_indicatorsData.flaps * 100.0f);
                 }
             }
         } else {
-            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Индикаторы: Нет данных");
+            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), TR().Get("indicators_no_data").c_str());
         }
     }
     
@@ -3817,21 +3836,21 @@ void RenderUI()
     {
         std::lock_guard<std::mutex> lock(g_stateMutex);
         if (g_stateData.valid) {
-            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Состояние:");
-            ImGui::Text("Высота: %d м", g_stateData.altitude);
-            ImGui::Text("Скорость (истинная): %d км/ч", g_stateData.tas);
-            ImGui::Text("Скорость (приборная): %d км/ч", g_stateData.ias);
-            ImGui::Text("Число Маха: %.2f", g_stateData.mach);
-            ImGui::Text("Угол атаки: %.1f°", g_stateData.aoa);
-            ImGui::Text("Вертикальная скорость: %.1f м/с", g_stateData.vy);
-            ImGui::Text("Топливо: %d / %d кг", g_stateData.fuel, g_stateData.fuel0);
+            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), TR().Get("state_header").c_str());
+            ImGui::Text(TR().Get("altitude_fmt").c_str(), g_stateData.altitude);
+            ImGui::Text(TR().Get("tas_fmt").c_str(), g_stateData.tas);
+            ImGui::Text(TR().Get("ias_fmt").c_str(), g_stateData.ias);
+            ImGui::Text(TR().Get("mach_fmt").c_str(), g_stateData.mach);
+            ImGui::Text(TR().Get("aoa_fmt").c_str(), g_stateData.aoa);
+            ImGui::Text(TR().Get("vy_fmt").c_str(), g_stateData.vy);
+            ImGui::Text(TR().Get("fuel_fmt").c_str(), g_stateData.fuel, g_stateData.fuel0);
             float fuelPercent = g_stateData.fuel0 > 0 ? (g_stateData.fuel * 100.0f / g_stateData.fuel0) : 0.0f;
-            ImGui::Text("Топливо: %.1f%%", fuelPercent);
-            ImGui::Text("Рычаг газа 1: %d%%", g_stateData.throttle1);
-            ImGui::Text("Обороты 1: %d", g_stateData.rpm1);
-            ImGui::Text("Мощность 1: %.1f л.с.", g_stateData.power1);
+            ImGui::Text(TR().Get("fuel_percent_fmt").c_str(), fuelPercent);
+            ImGui::Text(TR().Get("throttle1_fmt").c_str(), g_stateData.throttle1);
+            ImGui::Text(TR().Get("rpm1_fmt").c_str(), g_stateData.rpm1);
+            ImGui::Text(TR().Get("power1_fmt").c_str(), g_stateData.power1);
         } else {
-            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Состояние: Нет данных");
+            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), TR().Get("state_no_data").c_str());
         }
     }
     
@@ -3843,14 +3862,14 @@ void RenderUI()
     {
         std::lock_guard<std::mutex> lock(g_missionMutex);
         if (g_missionData.valid) {
-            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), "Миссия:");
+            ImGui::TextColored(ImVec4(0.7f, 0.9f, 1.0f, 1.0f), TR().Get("mission_header").c_str());
             
             // Статус миссии
-            std::string statusText = "Статус: ";
+            std::string statusText = TR().Get("status_label");
             if (g_missionData.status == "running") {
-                statusText += "В процессе";
+                statusText += TR().Get("status_running");
             } else if (g_missionData.status == "fail") {
-                statusText += "Провалена";
+                statusText += TR().Get("status_fail");
             } else {
                 statusText += g_missionData.status;
             }
@@ -3860,24 +3879,24 @@ void RenderUI()
             
             // Цели миссии
             if (!g_missionData.objectives.empty()) {
-                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), "Цели:");
+                ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f), TR().Get("objectives_label").c_str());
                 for (const auto& obj : g_missionData.objectives) {
                     if (obj.primary) {
-                        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), "  [Основная]");
+                        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.0f, 1.0f), TR().Get("objective_primary").c_str());
                     } else {
-                        ImGui::Text("  [Вторичная]");
+                        ImGui::Text(TR().Get("objective_secondary").c_str());
                     }
                     
                     // Статус цели
-                    std::string statusStr = "  Статус: ";
+                    std::string statusStr = TR().Get("objective_status_label");
                     if (obj.status == "in_progress") {
-                        statusStr += "В процессе";
+                        statusStr += TR().Get("status_in_progress");
                         ImGui::TextColored(ImVec4(0.5f, 0.8f, 1.0f, 1.0f), "%s", statusStr.c_str());
                     } else if (obj.status == "completed") {
-                        statusStr += "Выполнено";
+                        statusStr += TR().Get("status_completed");
                         ImGui::TextColored(ImVec4(0.0f, 1.0f, 0.0f, 1.0f), "%s", statusStr.c_str());
                     } else if (obj.status == "failed") {
-                        statusStr += "Провалено";
+                        statusStr += TR().Get("status_failed");
                         ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "%s", statusStr.c_str());
                     } else {
                         statusStr += obj.status;
@@ -3886,15 +3905,15 @@ void RenderUI()
                     
                     // Текст цели
                     if (!obj.text.empty()) {
-                        ImGui::Text("  Задача: %s", obj.text.c_str());
+                        ImGui::Text(TR().Get("objective_text_fmt").c_str(), obj.text.c_str());
                     }
                     ImGui::Spacing();
                 }
             } else {
-                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Нет целей");
+                ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), TR().Get("no_objectives").c_str());
             }
         } else {
-            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), "Миссия: Нет данных");
+            ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), TR().Get("mission_no_data").c_str());
         }
     }
     
@@ -3903,8 +3922,8 @@ void RenderUI()
     ImGui::Spacing();
     
     // Кнопка для скрытия/показа чата (Content 2)
-    const char* buttonText = g_content2Visible ? reinterpret_cast<const char*>(u8"Скрыть чат") : reinterpret_cast<const char*>(u8"Показать чат");
-    if (ImGui::Button(buttonText, ImVec2(-1, 0))) {
+    std::string chatButtonText = g_content2Visible ? TR().Get("hide_chat") : TR().Get("show_chat");
+    if (ImGui::Button(chatButtonText.c_str(), ImVec2(-1, 0))) {
         g_content2Visible = !g_content2Visible;
         // Сохраняем настройки при изменении
         SaveSettings();
@@ -3913,8 +3932,8 @@ void RenderUI()
     ImGui::Spacing();
     
     // Кнопка для переключения дебаг режима
-    const char* debugButtonText = g_debugMode ? reinterpret_cast<const char*>(u8"Debug: ВКЛ") : reinterpret_cast<const char*>(u8"Debug: ВЫКЛ");
-    if (ImGui::Button(debugButtonText, ImVec2(-1, 0))) {
+    std::string debugButtonText = g_debugMode ? TR().Get("debug_on") : TR().Get("debug_off");
+    if (ImGui::Button(debugButtonText.c_str(), ImVec2(-1, 0))) {
         g_debugMode = !g_debugMode;
     }
     
@@ -3924,8 +3943,9 @@ void RenderUI()
     if (g_followMode) {
         ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.6f, 0.2f, 0.9f));
     }
-    const char* followButtonText = g_followMode ? reinterpret_cast<const char*>(u8"Слежение: ВКЛ (F)") : reinterpret_cast<const char*>(u8"Слежение: ВЫКЛ (F)");
-    if (ImGui::Button(followButtonText, ImVec2(-1, 0))) {
+
+    std::string followButtonText = g_followMode ? TR().Get("follow_on") : TR().Get("follow_off");
+    if (ImGui::Button(followButtonText.c_str(), ImVec2(-1, 0))) {
         g_followMode = !g_followMode;
         if (g_followMode) {
             // Сбрасываем корректировку зума при включении
@@ -3933,7 +3953,7 @@ void RenderUI()
         }
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip(reinterpret_cast<const char*>(u8"Слежение (F)\nКолесо мыши - корректировка зума\nПеретаскивание или СКМ для отключения"));
+        ImGui::SetTooltip(TR().Get("follow_tooltip").c_str());
     }
     if (g_followMode) {
         ImGui::PopStyleColor();
@@ -3942,7 +3962,7 @@ void RenderUI()
     ImGui::Spacing();
     
     // Кнопка для очистки всех выделений и меток
-    if (ImGui::Button(reinterpret_cast<const char*>(u8"Clear (C)"), ImVec2(-1, 0))) {
+    if (ImGui::Button(TR().Get("clear_tooltip").c_str(), ImVec2(-1, 0))) {
         g_selectedUnits.clear();
         {
             std::lock_guard<std::mutex> lock(g_mapMarkersMutex);
@@ -3950,7 +3970,7 @@ void RenderUI()
         }
     }
     if (ImGui::IsItemHovered()) {
-        ImGui::SetTooltip(reinterpret_cast<const char*>(u8"Очистить все выделения и метки (C)"));
+        ImGui::SetTooltip(TR().Get("follow_tooltip").c_str());
     }
     
     ImGui::EndChild();
@@ -3985,7 +4005,7 @@ void RenderUI()
         
         if (ImGui::BeginTabBar("##Content2Tabs", ImGuiTabBarFlags_None)) {
             // Таб "Чат"
-            if (ImGui::BeginTabItem(reinterpret_cast<const char*>(u8"Чат"))) {
+            if (ImGui::BeginTabItem(TR().Get("chat_tab").c_str())) {
                 ImGui::BeginChild("##ChatList", ImVec2(0, -1), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
                 
                 std::lock_guard<std::mutex> lock(g_chatMutex);
@@ -4029,12 +4049,12 @@ void RenderUI()
             }
             
             // Таб "Сражения"
-            if (ImGui::BeginTabItem(reinterpret_cast<const char*>(u8"Сражения"))) {
+            if (ImGui::BeginTabItem(TR().Get("events_tab").c_str())) {
                 ImGui::BeginChild("##EventList", ImVec2(0, -1), false, ImGuiWindowFlags_AlwaysVerticalScrollbar);
                 
                 std::lock_guard<std::mutex> lock(g_eventMutex);
                 if (g_eventMessages.empty()) {
-                    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), reinterpret_cast<const char*>(u8"Нет событий"));
+                    ImGui::TextColored(ImVec4(0.5f, 0.5f, 0.5f, 1.0f), TR().Get("no_events").c_str());
                 } else {
                     // Отображаем события в обратном порядке (новые сверху)
                     for (auto it = g_eventMessages.rbegin(); it != g_eventMessages.rend(); ++it) {
