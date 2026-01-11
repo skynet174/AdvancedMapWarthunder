@@ -7,7 +7,7 @@
 #include "UI.h"
 #include "JsonParser.h"
 #include "ApiFetcher.h"
-#include "FontEmbedded.h"
+#include "_FontEmbedded.h"
 #include "dictionary.hpp"
 #include <d3d11.h>
 #include <dxgi.h>
