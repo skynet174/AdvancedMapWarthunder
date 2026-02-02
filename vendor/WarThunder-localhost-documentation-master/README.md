@@ -3,7 +3,7 @@
 Repository dedicated to provide a full documentation to War Thunder localhost:8111 api
 
 # API Client Implementation
-- [https://github.com/lucasvmx/WarThunder-localhost-documentation)
+- [https://github.com/lucasvmx/WarThunder-localhost-documentation]
 
 # Documents
 - [GameChat](Gamechat/GameChat.md)
