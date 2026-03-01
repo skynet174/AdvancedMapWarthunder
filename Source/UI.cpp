@@ -77,6 +77,235 @@ static float g_offsetYVelocity = 0.0f;
 static const float g_friction = 0.85f; // Коэффициент трения (0.85 = 15% потери скорости за кадр)
 static const float g_minVelocity = 0.01f; // Минимальная скорость для остановки
 
+// ============================================
+// Утилиты для JSON парсинга (lightweight)
+// ============================================
+
+static size_t FindObjectEnd(const std::string& str, size_t start) {
+    int depth = 0;
+    bool inString = false;
+    for (size_t i = start; i < str.size(); i++) {
+        if (str[i] == '"' && (i == 0 || str[i-1] != '\\'))
+            inString = !inString;
+        if (!inString) {
+            if (str[i] == '{') depth++;
+            if (str[i] == '}') {
+                depth--;
+                if (depth == 0) return i + 1;
+            }
+        }
+    }
+    return std::string::npos;
+}
+
+static int JsonGetInt(const std::string& str, const std::string& key) {
+    size_t pos = str.find("\"" + key + "\"");
+    if (pos == std::string::npos) return 0;
+    pos = str.find(":", pos);
+    if (pos == std::string::npos) return 0;
+    pos++;
+    while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t')) pos++;
+    size_t end = pos;
+    while (end < str.size()) {
+        char c = str[end];
+        if (c == ',' || c == '}' || c == ']' || c == ' ' || c == '\t' || c == '\n' || c == '\r')
+            break;
+        end++;
+    }
+    return (end > pos) ? std::atoi(str.substr(pos, end - pos).c_str()) : 0;
+}
+
+static float JsonGetFloat(const std::string& str, const std::string& key) {
+    size_t pos = str.find("\"" + key + "\"");
+    if (pos == std::string::npos) return 0.0f;
+    pos = str.find(":", pos);
+    if (pos == std::string::npos) return 0.0f;
+    pos++;
+    while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t')) pos++;
+    size_t end = pos;
+    while (end < str.size()) {
+        char c = str[end];
+        if (c == ',' || c == '}' || c == ']' || c == ' ' || c == '\t' || c == '\n' || c == '\r')
+            break;
+        end++;
+    }
+    return (end > pos) ? static_cast<float>(std::atof(str.substr(pos, end - pos).c_str())) : 0.0f;
+}
+
+static bool JsonGetBool(const std::string& str, const std::string& key) {
+    size_t pos = str.find("\"" + key + "\"");
+    if (pos == std::string::npos) return false;
+    pos = str.find(":", pos);
+    if (pos == std::string::npos) return false;
+    pos++;
+    while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t')) pos++;
+    if (pos + 4 <= str.size() && str.substr(pos, 4) == "true") return true;
+    return false;
+}
+
+static std::string JsonGetString(const std::string& str, const std::string& key) {
+    size_t pos = str.find("\"" + key + "\"");
+    if (pos == std::string::npos) return "";
+    pos = str.find(":", pos);
+    if (pos == std::string::npos) return "";
+    pos++;
+    while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t' || str[pos] == '\"')) pos++;
+    size_t end = pos;
+    while (end < str.size()) {
+        if (str[end] == '\\' && end + 1 < str.size()) { end += 2; continue; }
+        if (str[end] == '"') break;
+        end++;
+    }
+    std::string result = str.substr(pos, end - pos);
+    std::string decoded;
+    for (size_t i = 0; i < result.size(); i++) {
+        if (result[i] == '\\' && i + 1 < result.size()) {
+            switch (result[i + 1]) {
+                case 'n': decoded += '\n'; i++; break;
+                case 't': decoded += '\t'; i++; break;
+                case 'r': decoded += '\r'; i++; break;
+                case '\\': decoded += '\\'; i++; break;
+                case '"': decoded += '"'; i++; break;
+                default: decoded += result[i]; break;
+            }
+        } else {
+            decoded += result[i];
+        }
+    }
+    return decoded;
+}
+
+static bool JsonGetFloatArray(const std::string& str, const std::string& key, float* outArray, int count) {
+    size_t pos = str.find("\"" + key + "\"");
+    if (pos == std::string::npos) return false;
+    pos = str.find("[", pos);
+    if (pos == std::string::npos) return false;
+    pos++;
+    size_t end = str.find("]", pos);
+    if (end == std::string::npos) return false;
+    std::string arrayStr = str.substr(pos, end - pos);
+    size_t itemStart = 0;
+    int index = 0;
+    while (itemStart < arrayStr.length() && index < count) {
+        while (itemStart < arrayStr.length() && (arrayStr[itemStart] == ' ' || arrayStr[itemStart] == '\t' || arrayStr[itemStart] == '"'))
+            itemStart++;
+        if (itemStart >= arrayStr.length()) break;
+        size_t itemEnd = itemStart;
+        while (itemEnd < arrayStr.length()) {
+            char c = arrayStr[itemEnd];
+            if (c == ',' || c == ']' || c == ' ' || c == '\t' || c == '"') break;
+            itemEnd++;
+        }
+        if (itemEnd > itemStart) {
+            outArray[index] = static_cast<float>(std::atof(arrayStr.substr(itemStart, itemEnd - itemStart).c_str()));
+            index++;
+        }
+        if (itemEnd < arrayStr.length() && arrayStr[itemEnd] == ',') itemEnd++;
+        itemStart = itemEnd;
+    }
+    return index == count;
+}
+
+// ============================================
+// Утилиты карты и расстояний
+// ============================================
+
+// Контекст отображения карты (чтобы не пересчитывать везде)
+struct MapDisplayContext {
+    float baseImageSize = 2048.0f;
+    float imgDisplaySize;
+    float imgX, imgY;
+    ImVec2 contentPos;
+
+    MapDisplayContext(const ImVec2& contentSize, const ImVec2& contentPos_, float zoom, float offsetX, float offsetY)
+        : contentPos(contentPos_)
+    {
+        imgDisplaySize = baseImageSize * zoom;
+        imgX = contentSize.x * 0.5f + offsetX - imgDisplaySize * 0.5f;
+        imgY = contentSize.y * 0.5f + offsetY - imgDisplaySize * 0.5f;
+    }
+
+    ImVec2 ToScreen(float normX, float normY) const {
+        return ImVec2(contentPos.x + imgX + normX * imgDisplaySize,
+                      contentPos.y + imgY + normY * imgDisplaySize);
+    }
+};
+
+// Найти игрока в списке объектов
+static const MapObject* FindPlayerUnit(const std::vector<MapObject>& objects) {
+    for (const auto& obj : objects) {
+        if (obj.isPlayer) return &obj;
+    }
+    return nullptr;
+}
+
+// Вычислить расстояние в метрах между двумя нормализованными координатами (0-1) на карте
+static float CalcGameDistance(float normX1, float normY1, float normX2, float normY2, const MapInfoData& mapInfo) {
+    float mapSizeX = mapInfo.mapMax.x - mapInfo.mapMin.x;
+    float mapSizeY = mapInfo.mapMax.y - mapInfo.mapMin.y;
+    double game1X = mapInfo.mapMin.x + normX1 * mapSizeX;
+    double game1Y = mapInfo.mapMax.y - normY1 * mapSizeY;
+    double game2X = mapInfo.mapMin.x + normX2 * mapSizeX;
+    double game2Y = mapInfo.mapMax.y - normY2 * mapSizeY;
+    double dx = game2X - game1X;
+    double dy = game2Y - game1Y;
+    return (float)sqrt(dx * dx + dy * dy);
+}
+
+// Отрисовать метку расстояния (с опциональным ETA)
+static void DrawDistanceLabel(ImDrawList* drawList, float midX, float midY,
+                              float distMeters, ImU32 color, float playerSpeedKmh = 0.0f) {
+    float distKm = distMeters / 1000.0f;
+    char distText[96];
+    if (distKm >= 1.0f)
+        snprintf(distText, sizeof(distText), "%.3f km", distKm);
+    else
+        snprintf(distText, sizeof(distText), "%.0f m", distMeters);
+
+    if (playerSpeedKmh > 1.0f) {
+        float speedMs = playerSpeedKmh / 3.6f;
+        float etaSeconds = distMeters / speedMs;
+        size_t len = strlen(distText);
+        if (etaSeconds >= 3600.0f) {
+            int hours = (int)(etaSeconds / 3600.0f);
+            int minutes = (int)(fmodf(etaSeconds, 3600.0f) / 60.0f);
+            snprintf(distText + len, sizeof(distText) - len, " | ETA %dh%02dm", hours, minutes);
+        } else if (etaSeconds >= 60.0f) {
+            int minutes = (int)(etaSeconds / 60.0f);
+            int seconds = (int)(fmodf(etaSeconds, 60.0f));
+            snprintf(distText + len, sizeof(distText) - len, " | ETA %dm%02ds", minutes, seconds);
+        } else {
+            snprintf(distText + len, sizeof(distText) - len, " | ETA %.0fs", etaSeconds);
+        }
+    }
+
+    ImVec2 textSize = ImGui::CalcTextSize(distText);
+    drawList->AddRectFilled(
+        ImVec2(midX - textSize.x * 0.5f - 3, midY - textSize.y * 0.5f - 2),
+        ImVec2(midX + textSize.x * 0.5f + 3, midY + textSize.y * 0.5f + 2),
+        IM_COL32(0, 0, 0, 180), 3.0f
+    );
+    drawList->AddText(
+        ImVec2(midX - textSize.x * 0.5f, midY - textSize.y * 0.5f),
+        color, distText
+    );
+}
+
+// Отрисовать линию + метку расстояния между двумя нормализованными точками
+static void DrawLineWithDistance(ImDrawList* drawList, const MapDisplayContext& ctx,
+                                 float normX1, float normY1, float normX2, float normY2,
+                                 const MapInfoData& mapInfo, ImU32 lineColor, ImU32 textColor,
+                                 float lineWidth = 2.0f, float playerSpeedKmh = 0.0f) {
+    ImVec2 p1 = ctx.ToScreen(normX1, normY1);
+    ImVec2 p2 = ctx.ToScreen(normX2, normY2);
+    drawList->AddLine(p1, p2, lineColor, lineWidth);
+
+    float distMeters = CalcGameDistance(normX1, normY1, normX2, normY2, mapInfo);
+    float midX = (p1.x + p2.x) * 0.5f;
+    float midY = (p1.y + p2.y) * 0.5f;
+    DrawDistanceLabel(drawList, midX, midY, distMeters, textColor, playerSpeedKmh);
+}
+
 // Функция для парсинга hex цвета в ImVec4
 ImVec4 ParseColorHex(const std::string& hexColor) {
     // Формат: #AARRGGBB (ARGB) или #RRGGBB (RGB)
@@ -705,120 +934,23 @@ void RenderColoredText(const std::string& text) {
 
 // Парсинг игрового чата
 void ParseGameChat(const std::string& jsonData) {
-    // Простой парсинг JSON массива сообщений
-    // Формат: [{"id": 70, "msg": "...", "sender": "...", "enemy": false, "mode": "All"}, ...]
-    
     std::lock_guard<std::mutex> lock(g_chatMutex);
-    
-    // Функция для поиска конца объекта (с учетом вложенных объектов и строк)
-    auto findObjectEnd = [](const std::string& str, size_t start) -> size_t {
-        int depth = 0;
-        bool inString = false;
-        for (size_t i = start; i < str.size(); i++) {
-            if (str[i] == '"' && (i == 0 || str[i-1] != '\\'))
-                inString = !inString;
-            if (!inString) {
-                if (str[i] == '{') depth++;
-                if (str[i] == '}') {
-                    depth--;
-                    if (depth == 0) return i + 1;
-                }
-            }
-        }
-        return std::string::npos;
-    };
-    
+
     size_t pos = 0;
     while ((pos = jsonData.find("{", pos)) != std::string::npos) {
-        size_t objEnd = findObjectEnd(jsonData, pos);
+        size_t objEnd = FindObjectEnd(jsonData, pos);
         if (objEnd == std::string::npos) break;
-        
+
         std::string objStr = jsonData.substr(pos, objEnd - pos);
         pos = objEnd;
-        
+
         ChatMessage msg;
-        
-        // Используем правильный парсинг JSON (паттерн из старого проекта)
-        // Функция для парсинга int из JSON
-        auto parseJsonInt = [](const std::string& str, const std::string& key) -> int {
-            size_t pos = str.find("\"" + key + "\"");
-            if (pos != std::string::npos) {
-                pos = str.find(":", pos);
-                if (pos != std::string::npos) {
-                    pos++;
-                    while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t'))
-                        pos++;
-                    return std::stoi(str.substr(pos));
-                }
-            }
-            return 0;
-        };
-        
-        // Функция для парсинга boolean из JSON
-        auto parseJsonBool = [](const std::string& str, const std::string& key) -> bool {
-            size_t pos = str.find("\"" + key + "\"");
-            if (pos != std::string::npos) {
-                pos = str.find(":", pos);
-                if (pos != std::string::npos) {
-                    pos++;
-                    while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t'))
-                        pos++;
-                    // Проверяем "true" или "false"
-                    if (pos + 4 <= str.size() && str.substr(pos, 4) == "true")
-                        return true;
-                    if (pos + 5 <= str.size() && str.substr(pos, 5) == "false")
-                        return false;
-                }
-            }
-            return false;
-        };
-        
-        // Функция для парсинга string из JSON (с правильной обработкой escape-последовательностей)
-        auto parseJsonString = [](const std::string& str, const std::string& key) -> std::string {
-            size_t pos = str.find("\"" + key + "\"");
-            if (pos != std::string::npos) {
-                pos = str.find(":", pos);
-                if (pos != std::string::npos) {
-                    pos++;
-                    while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t' || str[pos] == '\"'))
-                        pos++;
-                    size_t end = pos;
-                    while (end < str.size()) {
-                        if (str[end] == '\\' && end + 1 < str.size()) {
-                            end += 2; // Пропускаем escape-последовательность
-                            continue;
-                        }
-                        if (str[end] == '"')
-                            break;
-                        end++;
-                    }
-                    std::string result = str.substr(pos, end - pos);
-                    // Раскодируем escape-последовательности
-                    std::string decoded;
-                    for (size_t i = 0; i < result.size(); i++) {
-                        if (result[i] == '\\' && i + 1 < result.size()) {
-                            if (result[i+1] == 'n') { decoded += '\n'; i++; }
-                            else if (result[i+1] == 't') { decoded += '\t'; i++; }
-                            else if (result[i+1] == 'r') { decoded += '\r'; i++; }
-                            else if (result[i+1] == '\\') { decoded += '\\'; i++; }
-                            else if (result[i+1] == '"') { decoded += '"'; i++; }
-                            else decoded += result[i];
-                        } else {
-                            decoded += result[i];
-                        }
-                    }
-                    return decoded;
-                }
-            }
-            return "";
-        };
-        
-        msg.id = parseJsonInt(objStr, "id");
-        msg.msg = parseJsonString(objStr, "msg");
-        msg.sender = parseJsonString(objStr, "sender");
-        msg.enemy = parseJsonBool(objStr, "enemy"); // Правильный парсинг boolean
-        msg.mode = parseJsonString(objStr, "mode");
-        
+        msg.id = JsonGetInt(objStr, "id");
+        msg.msg = JsonGetString(objStr, "msg");
+        msg.sender = JsonGetString(objStr, "sender");
+        msg.enemy = JsonGetBool(objStr, "enemy");
+        msg.mode = JsonGetString(objStr, "mode");
+
         if (msg.id > g_lastChatId) {
             g_lastChatId = msg.id;
             extern ApiFetcher* g_apiFetcher;
@@ -826,7 +958,7 @@ void ParseGameChat(const std::string& jsonData) {
                 g_apiFetcher->SetLastChatId(msg.id);
             }
         }
-        
+
         // Добавляем сообщение (проверяем, нет ли уже такого ID)
         bool exists = false;
         for (const auto& existing : g_chatMessages) {
@@ -837,7 +969,6 @@ void ParseGameChat(const std::string& jsonData) {
         }
         if (!exists && !msg.msg.empty()) {
             g_chatMessages.push_back(msg);
-            // Ограничиваем размер (последние 200 сообщений)
             if (g_chatMessages.size() > 200) {
                 g_chatMessages.erase(g_chatMessages.begin());
             }
@@ -860,125 +991,33 @@ void ParseHudMsg(const std::string& jsonData) {
     if (damageEnd == std::string::npos) return;
     
     std::string damageArray = jsonData.substr(damageStart, damageEnd - damageStart);
-    
-    // Функция для поиска конца объекта (с учетом вложенных объектов и строк)
-    auto findObjectEnd = [](const std::string& str, size_t start) -> size_t {
-        int depth = 0;
-        bool inString = false;
-        for (size_t i = start; i < str.size(); i++) {
-            if (str[i] == '"' && (i == 0 || str[i-1] != '\\'))
-                inString = !inString;
-            if (!inString) {
-                if (str[i] == '{') depth++;
-                if (str[i] == '}') {
-                    depth--;
-                    if (depth == 0) return i + 1;
-                }
-            }
-        }
-        return std::string::npos;
-    };
-    
-    // Функция для парсинга int из JSON
-    auto parseJsonInt = [](const std::string& str, const std::string& key) -> int {
-        size_t pos = str.find("\"" + key + "\"");
-        if (pos != std::string::npos) {
-            pos = str.find(":", pos);
-            if (pos != std::string::npos) {
-                pos++;
-                while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t'))
-                    pos++;
-                return std::stoi(str.substr(pos));
-            }
-        }
-        return 0;
-    };
-    
-    // Функция для парсинга string из JSON (с правильной обработкой escape-последовательностей)
-    auto parseJsonString = [](const std::string& str, const std::string& key) -> std::string {
-        size_t pos = str.find("\"" + key + "\"");
-        if (pos != std::string::npos) {
-            pos = str.find(":", pos);
-            if (pos != std::string::npos) {
-                pos++;
-                while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t' || str[pos] == '\"'))
-                    pos++;
-                size_t end = pos;
-                while (end < str.size()) {
-                    if (str[end] == '\\' && end + 1 < str.size()) {
-                        end += 2; // Пропускаем escape-последовательность
-                        continue;
-                    }
-                    if (str[end] == '"')
-                        break;
-                    end++;
-                }
-                std::string result = str.substr(pos, end - pos);
-                // Раскодируем escape-последовательности
-                std::string decoded;
-                for (size_t i = 0; i < result.size(); i++) {
-                    if (result[i] == '\\' && i + 1 < result.size()) {
-                        if (result[i+1] == 'n') { decoded += '\n'; i++; }
-                        else if (result[i+1] == 't') { decoded += '\t'; i++; }
-                        else if (result[i+1] == 'r') { decoded += '\r'; i++; }
-                        else if (result[i+1] == '\\') { decoded += '\\'; i++; }
-                        else if (result[i+1] == '"') { decoded += '"'; i++; }
-                        else decoded += result[i];
-                    } else {
-                        decoded += result[i];
-                    }
-                }
-                return decoded;
-            }
-        }
-        return "";
-    };
-    
+
     // Сохраняем все объекты для поиска предыдущих сообщений
     std::vector<std::pair<size_t, size_t>> objectPositions; // (start, end)
     size_t tempPos = 0;
     while ((tempPos = damageArray.find("{", tempPos)) != std::string::npos) {
-        size_t objEnd = findObjectEnd(damageArray, tempPos);
+        size_t objEnd = FindObjectEnd(damageArray, tempPos);
         if (objEnd == std::string::npos) break;
         objectPositions.push_back({tempPos, objEnd});
         tempPos = objEnd;
     }
-    
+
     size_t objPos = 0;
     size_t currentObjIndex = 0;
     while ((objPos = damageArray.find("{", objPos)) != std::string::npos) {
-        size_t objEnd = findObjectEnd(damageArray, objPos);
+        size_t objEnd = FindObjectEnd(damageArray, objPos);
         if (objEnd == std::string::npos) break;
         
         std::string objStr = damageArray.substr(objPos, objEnd - objPos);
         size_t originalObjPos = objPos;
         objPos = objEnd;
-        
-        // Функция для парсинга boolean из JSON
-        auto parseJsonBool = [](const std::string& str, const std::string& key) -> bool {
-            size_t pos = str.find("\"" + key + "\"");
-            if (pos != std::string::npos) {
-                pos = str.find(":", pos);
-                if (pos != std::string::npos) {
-                    pos++;
-                    while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t'))
-                        pos++;
-                    // Проверяем "true" или "false"
-                    if (pos + 4 <= str.size() && str.substr(pos, 4) == "true")
-                        return true;
-                    if (pos + 5 <= str.size() && str.substr(pos, 5) == "false")
-                        return false;
-                }
-            }
-            return false;
-        };
-        
-        int id = parseJsonInt(objStr, "id");
-        std::string msg = parseJsonString(objStr, "msg");
-        std::string sender = parseJsonString(objStr, "sender");
-        bool enemy = parseJsonBool(objStr, "enemy"); // Правильный парсинг boolean
-        std::string mode = parseJsonString(objStr, "mode");
-        int time = parseJsonInt(objStr, "time");
+
+        int id = JsonGetInt(objStr, "id");
+        std::string msg = JsonGetString(objStr, "msg");
+        std::string sender = JsonGetString(objStr, "sender");
+        bool enemy = JsonGetBool(objStr, "enemy");
+        std::string mode = JsonGetString(objStr, "mode");
+        int time = JsonGetInt(objStr, "time");
         
         // Обновляем последний обработанный ID
         if (id > g_lastEventId) {
@@ -1028,11 +1067,11 @@ void ParseHudMsg(const std::string& jsonData) {
                 
                 // Если имя все еще не найдено, ищем в предыдущих сообщениях
                 if (playerName.empty() && currentObjIndex > 0) {
-                    for (int i = currentObjIndex - 1; i >= 0 && i >= (int)currentObjIndex - 3; i--) {
+                    for (size_t i = currentObjIndex - 1; i >= 0 && i >= currentObjIndex - 3; i--) {
                         std::string prevObjStr = damageArray.substr(objectPositions[i].first, 
                                                                     objectPositions[i].second - objectPositions[i].first);
-                        std::string prevMsg = parseJsonString(prevObjStr, "msg");
-                        std::string prevSender = parseJsonString(prevObjStr, "sender");
+                        std::string prevMsg = JsonGetString(prevObjStr, "msg");
+                        std::string prevSender = JsonGetString(prevObjStr, "sender");
                         
                         // Если предыдущее сообщение содержит имя (не kd? и не пустое)
                         if (!prevMsg.empty() && prevMsg.find("kd?") == std::string::npos) {
@@ -1117,11 +1156,11 @@ void ParseHudMsg(const std::string& jsonData) {
                 bool foundReason = false;
                 size_t nextObjPos = objPos;
                 while ((nextObjPos = damageArray.find("{", nextObjPos)) != std::string::npos) {
-                    size_t nextObjEnd = findObjectEnd(damageArray, nextObjPos);
+                    size_t nextObjEnd = FindObjectEnd(damageArray, nextObjPos);
                     if (nextObjEnd == std::string::npos) break;
-                    
+
                     std::string nextObjStr = damageArray.substr(nextObjPos, nextObjEnd - nextObjPos);
-                    std::string nextMsg = parseJsonString(nextObjStr, "msg");
+                    std::string nextMsg = JsonGetString(nextObjStr, "msg");
                     
                     if (nextMsg.find("kd?") != std::string::npos && (playerName.empty() || nextMsg.find(playerName) != std::string::npos)) {
                         // Извлекаем причину
@@ -1205,269 +1244,69 @@ void ParseHudMsg(const std::string& jsonData) {
 // Парсинг данных indicators
 void ParseIndicators(const std::string& jsonData) {
     std::lock_guard<std::mutex> lock(g_indicatorsMutex);
-    
-    // Функция для парсинга bool из JSON
-    auto parseJsonBool = [](const std::string& str, const std::string& key) -> bool {
-        size_t pos = str.find("\"" + key + "\"");
-        if (pos != std::string::npos) {
-            pos = str.find(":", pos);
-            if (pos != std::string::npos) {
-                pos++;
-                while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t'))
-                    pos++;
-                if (pos + 4 <= str.size() && str.substr(pos, 4) == "true")
-                    return true;
-                if (pos + 5 <= str.size() && str.substr(pos, 5) == "false")
-                    return false;
-            }
-        }
-        return false;
-    };
-    
-    // Функция для парсинга string из JSON
-    auto parseJsonString = [](const std::string& str, const std::string& key) -> std::string {
-        size_t pos = str.find("\"" + key + "\"");
-        if (pos != std::string::npos) {
-            pos = str.find(":", pos);
-            if (pos != std::string::npos) {
-                pos++;
-                while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t' || str[pos] == '\"'))
-                    pos++;
-                size_t end = pos;
-                while (end < str.size()) {
-                    if (str[end] == '\\' && end + 1 < str.size()) {
-                        end += 2;
-                        continue;
-                    }
-                    if (str[end] == '"')
-                        break;
-                    end++;
-                }
-                return str.substr(pos, end - pos);
-            }
-        }
-        return "";
-    };
-    
-    // Функция для парсинга float из JSON
-    auto parseJsonFloat = [](const std::string& str, const std::string& key) -> float {
-        size_t pos = str.find("\"" + key + "\"");
-        if (pos != std::string::npos) {
-            pos = str.find(":", pos);
-            if (pos != std::string::npos) {
-                pos++;
-                while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t'))
-                    pos++;
-                // Находим конец числа (до запятой, закрывающей скобки или пробела)
-                size_t end = pos;
-                while (end < str.size()) {
-                    char c = str[end];
-                    if (c == ',' || c == '}' || c == ']' || c == ' ' || c == '\t' || c == '\n' || c == '\r')
-                        break;
-                    end++;
-                }
-                if (end > pos) {
-                    std::string numStr = str.substr(pos, end - pos);
-                    return static_cast<float>(std::atof(numStr.c_str()));
-                }
-            }
-        }
-        return 0.0f;
-    };
-    
-    g_indicatorsData.valid = parseJsonBool(jsonData, "valid");
-    g_indicatorsData.type = parseJsonString(jsonData, "type");
-    g_indicatorsData.speed = parseJsonFloat(jsonData, "speed");
-    g_indicatorsData.altitude_hour = parseJsonFloat(jsonData, "altitude_hour");
-    g_indicatorsData.altitude_min = parseJsonFloat(jsonData, "altitude_min");
-    g_indicatorsData.compass = parseJsonFloat(jsonData, "compass");
-    g_indicatorsData.mach = parseJsonFloat(jsonData, "mach");
-    g_indicatorsData.g_meter = parseJsonFloat(jsonData, "g_meter");
-    g_indicatorsData.fuel = parseJsonFloat(jsonData, "fuel");
-    g_indicatorsData.throttle = parseJsonFloat(jsonData, "throttle");
-    g_indicatorsData.gears = parseJsonFloat(jsonData, "gears");
-    g_indicatorsData.flaps = parseJsonFloat(jsonData, "flaps");
+
+    g_indicatorsData.valid = JsonGetBool(jsonData, "valid");
+    g_indicatorsData.type = JsonGetString(jsonData, "type");
+    g_indicatorsData.speed = JsonGetFloat(jsonData, "speed");
+    g_indicatorsData.altitude_hour = JsonGetFloat(jsonData, "altitude_hour");
+    g_indicatorsData.altitude_min = JsonGetFloat(jsonData, "altitude_min");
+    g_indicatorsData.compass = JsonGetFloat(jsonData, "compass");
+    g_indicatorsData.mach = JsonGetFloat(jsonData, "mach");
+    g_indicatorsData.g_meter = JsonGetFloat(jsonData, "g_meter");
+    g_indicatorsData.fuel = JsonGetFloat(jsonData, "fuel");
+    g_indicatorsData.throttle = JsonGetFloat(jsonData, "throttle");
+    g_indicatorsData.gears = JsonGetFloat(jsonData, "gears");
+    g_indicatorsData.flaps = JsonGetFloat(jsonData, "flaps");
 }
 
 // Парсинг данных state
 void ParseState(const std::string& jsonData) {
     std::lock_guard<std::mutex> lock(g_stateMutex);
-    
-    // Функция для парсинга bool из JSON
-    auto parseJsonBool = [](const std::string& str, const std::string& key) -> bool {
-        size_t pos = str.find("\"" + key + "\"");
-        if (pos != std::string::npos) {
-            pos = str.find(":", pos);
-            if (pos != std::string::npos) {
-                pos++;
-                while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t'))
-                    pos++;
-                if (pos + 4 <= str.size() && str.substr(pos, 4) == "true")
-                    return true;
-                if (pos + 5 <= str.size() && str.substr(pos, 5) == "false")
-                    return false;
-            }
-        }
-        return false;
-    };
-    
-    // Функция для парсинга int из JSON
-    auto parseJsonInt = [](const std::string& str, const std::string& key) -> int {
-        size_t pos = str.find("\"" + key + "\"");
-        if (pos != std::string::npos) {
-            pos = str.find(":", pos);
-            if (pos != std::string::npos) {
-                pos++;
-                while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t'))
-                    pos++;
-                // Находим конец числа (до запятой, закрывающей скобки или пробела)
-                size_t end = pos;
-                while (end < str.size()) {
-                    char c = str[end];
-                    if (c == ',' || c == '}' || c == ']' || c == ' ' || c == '\t' || c == '\n' || c == '\r')
-                        break;
-                    end++;
-                }
-                if (end > pos) {
-                    std::string numStr = str.substr(pos, end - pos);
-                    return std::atoi(numStr.c_str());
-                }
-            }
-        }
-        return 0;
-    };
-    
-    // Функция для парсинга float из JSON
-    auto parseJsonFloat = [](const std::string& str, const std::string& key) -> float {
-        size_t pos = str.find("\"" + key + "\"");
-        if (pos != std::string::npos) {
-            pos = str.find(":", pos);
-            if (pos != std::string::npos) {
-                pos++;
-                while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t'))
-                    pos++;
-                // Находим конец числа (до запятой, закрывающей скобки или пробела)
-                size_t end = pos;
-                while (end < str.size()) {
-                    char c = str[end];
-                    if (c == ',' || c == '}' || c == ']' || c == ' ' || c == '\t' || c == '\n' || c == '\r')
-                        break;
-                    end++;
-                }
-                if (end > pos) {
-                    std::string numStr = str.substr(pos, end - pos);
-                    return static_cast<float>(std::atof(numStr.c_str()));
-                }
-            }
-        }
-        return 0.0f;
-    };
-    
-    g_stateData.valid = parseJsonBool(jsonData, "valid");
-    g_stateData.altitude = parseJsonInt(jsonData, "H, m");
-    g_stateData.tas = parseJsonInt(jsonData, "TAS, km/h");
-    g_stateData.ias = parseJsonInt(jsonData, "IAS, km/h");
-    g_stateData.mach = parseJsonFloat(jsonData, "M");
-    g_stateData.aoa = parseJsonFloat(jsonData, "AoA, deg");
-    g_stateData.vy = parseJsonFloat(jsonData, "Vy, m/s");
-    g_stateData.fuel = parseJsonInt(jsonData, "Mfuel, kg");
-    g_stateData.fuel0 = parseJsonInt(jsonData, "Mfuel0, kg");
-    g_stateData.throttle1 = parseJsonInt(jsonData, "throttle 1, %");
-    g_stateData.rpm1 = parseJsonInt(jsonData, "RPM 1");
-    g_stateData.power1 = parseJsonFloat(jsonData, "power 1, hp");
+
+    g_stateData.valid = JsonGetBool(jsonData, "valid");
+    g_stateData.altitude = JsonGetInt(jsonData, "H, m");
+    g_stateData.tas = JsonGetInt(jsonData, "TAS, km/h");
+    g_stateData.ias = JsonGetInt(jsonData, "IAS, km/h");
+    g_stateData.mach = JsonGetFloat(jsonData, "M");
+    g_stateData.aoa = JsonGetFloat(jsonData, "AoA, deg");
+    g_stateData.vy = JsonGetFloat(jsonData, "Vy, m/s");
+    g_stateData.fuel = JsonGetInt(jsonData, "Mfuel, kg");
+    g_stateData.fuel0 = JsonGetInt(jsonData, "Mfuel0, kg");
+    g_stateData.throttle1 = JsonGetInt(jsonData, "throttle 1, %");
+    g_stateData.rpm1 = JsonGetInt(jsonData, "RPM 1");
+    g_stateData.power1 = JsonGetFloat(jsonData, "power 1, hp");
 }
 
 // Парсинг данных mission
 void ParseMission(const std::string& jsonData) {
     std::lock_guard<std::mutex> lock(g_missionMutex);
-    
-    // Функция для парсинга bool из JSON
-    auto parseJsonBool = [](const std::string& str, const std::string& key) -> bool {
-        size_t pos = str.find("\"" + key + "\"");
-        if (pos != std::string::npos) {
-            pos = str.find(":", pos);
-            if (pos != std::string::npos) {
-                pos++;
-                while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t'))
-                    pos++;
-                if (pos + 4 <= str.size() && str.substr(pos, 4) == "true")
-                    return true;
-                if (pos + 5 <= str.size() && str.substr(pos, 5) == "false")
-                    return false;
-            }
-        }
-        return false;
-    };
-    
-    // Функция для парсинга string из JSON
-    auto parseJsonString = [](const std::string& str, const std::string& key) -> std::string {
-        size_t pos = str.find("\"" + key + "\"");
-        if (pos != std::string::npos) {
-            pos = str.find(":", pos);
-            if (pos != std::string::npos) {
-                pos++;
-                while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t' || str[pos] == '\"'))
-                    pos++;
-                size_t end = pos;
-                while (end < str.size()) {
-                    if (str[end] == '\\' && end + 1 < str.size()) {
-                        end += 2;
-                        continue;
-                    }
-                    if (str[end] == '"')
-                        break;
-                    end++;
-                }
-                return str.substr(pos, end - pos);
-            }
-        }
-        return "";
-    };
-    
+
     g_missionData.valid = true;
-    g_missionData.status = parseJsonString(jsonData, "status");
+    g_missionData.status = JsonGetString(jsonData, "status");
     g_missionData.objectives.clear();
-    
+
     // Парсим массив objectives
     size_t objectivesStart = jsonData.find("\"objectives\":[");
     if (objectivesStart != std::string::npos) {
-        objectivesStart += 14; // Пропускаем "objectives":[
+        objectivesStart += 14;
         size_t objectivesEnd = jsonData.find("]", objectivesStart);
         if (objectivesEnd != std::string::npos) {
             std::string objectivesArray = jsonData.substr(objectivesStart, objectivesEnd - objectivesStart);
-            
-            // Функция для поиска конца объекта
-            auto findObjectEnd = [](const std::string& str, size_t start) -> size_t {
-                int depth = 0;
-                bool inString = false;
-                for (size_t i = start; i < str.size(); i++) {
-                    if (str[i] == '"' && (i == 0 || str[i-1] != '\\'))
-                        inString = !inString;
-                    if (!inString) {
-                        if (str[i] == '{') depth++;
-                        if (str[i] == '}') {
-                            depth--;
-                            if (depth == 0) return i + 1;
-                        }
-                    }
-                }
-                return std::string::npos;
-            };
-            
+
             size_t objPos = 0;
             while ((objPos = objectivesArray.find("{", objPos)) != std::string::npos) {
-                size_t objEnd = findObjectEnd(objectivesArray, objPos);
+                size_t objEnd = FindObjectEnd(objectivesArray, objPos);
                 if (objEnd == std::string::npos) break;
-                
+
                 std::string objStr = objectivesArray.substr(objPos, objEnd - objPos);
-                
+
                 MissionObjective objective;
-                objective.primary = parseJsonBool(objStr, "primary");
-                objective.status = parseJsonString(objStr, "status");
-                objective.text = parseJsonString(objStr, "text");
-                
+                objective.primary = JsonGetBool(objStr, "primary");
+                objective.status = JsonGetString(objStr, "status");
+                objective.text = JsonGetString(objStr, "text");
+
                 g_missionData.objectives.push_back(objective);
-                
+
                 objPos = objEnd;
             }
         }
@@ -1504,89 +1343,14 @@ static void ReloadMapTexture() {
 // Парсинг данных map_info
 void ParseMapInfo(const std::string& jsonData) {
     std::lock_guard<std::mutex> lock(g_mapInfoMutex);
-    
-    // Функция для парсинга массива float из JSON
-    auto parseJsonFloatArray = [](const std::string& str, const std::string& key, float* outArray, int count) -> bool {
-        size_t pos = str.find("\"" + key + "\"");
-        if (pos == std::string::npos) return false;
-        
-        pos = str.find("[", pos);
-        if (pos == std::string::npos) return false;
-        
-        pos++; // Пропускаем [
-        size_t end = str.find("]", pos);
-        if (end == std::string::npos) return false;
-        
-        std::string arrayStr = str.substr(pos, end - pos);
-        
-        // Парсим элементы массива
-        size_t itemStart = 0;
-        int index = 0;
-        while (itemStart < arrayStr.length() && index < count) {
-            // Пропускаем пробелы и кавычки
-            while (itemStart < arrayStr.length() && (arrayStr[itemStart] == ' ' || arrayStr[itemStart] == '\t' || arrayStr[itemStart] == '"'))
-                itemStart++;
-            
-            if (itemStart >= arrayStr.length()) break;
-            
-            // Ищем конец числа (запятая, закрывающая скобка или пробел)
-            size_t itemEnd = itemStart;
-            while (itemEnd < arrayStr.length()) {
-                char c = arrayStr[itemEnd];
-                if (c == ',' || c == ']' || c == ' ' || c == '\t' || c == '"')
-                    break;
-                itemEnd++;
-            }
-            
-            if (itemEnd > itemStart) {
-                std::string numStr = arrayStr.substr(itemStart, itemEnd - itemStart);
-                outArray[index] = static_cast<float>(std::atof(numStr.c_str()));
-                index++;
-            }
-            
-            // Пропускаем запятую
-            if (itemEnd < arrayStr.length() && arrayStr[itemEnd] == ',')
-                itemEnd++;
-            
-            itemStart = itemEnd;
-        }
-        
-        return index == count;
-    };
-    
-    // Функция для парсинга int из JSON
-    auto parseJsonInt = [](const std::string& str, const std::string& key) -> int {
-        size_t pos = str.find("\"" + key + "\"");
-        if (pos != std::string::npos) {
-            pos = str.find(":", pos);
-            if (pos != std::string::npos) {
-                pos++;
-                while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t'))
-                    pos++;
-                // Ищем конец числа
-                size_t end = pos;
-                while (end < str.size()) {
-                    char c = str[end];
-                    if (c == ',' || c == '}' || c == ']' || c == ' ' || c == '\t' || c == '\n' || c == '\r')
-                        break;
-                    end++;
-                }
-                if (end > pos) {
-                    std::string numStr = str.substr(pos, end - pos);
-                    return std::atoi(numStr.c_str());
-                }
-            }
-        }
-        return 0;
-    };
-    
+
     g_mapInfoData.valid = true;
-    parseJsonFloatArray(jsonData, "grid_steps", g_mapInfoData.gridSteps, 2);
-    parseJsonFloatArray(jsonData, "grid_zero", g_mapInfoData.gridZero, 2);
-    parseJsonFloatArray(jsonData, "map_min", g_mapInfoData.mapMin, 2);
-    parseJsonFloatArray(jsonData, "map_max", g_mapInfoData.mapMax, 2);
-    g_mapInfoData.hudType = parseJsonInt(jsonData, "hud_type");
-    int newMapGeneration = parseJsonInt(jsonData, "map_generation");
+    JsonGetFloatArray(jsonData, "grid_steps", &g_mapInfoData.gridSteps.x, 2);
+    JsonGetFloatArray(jsonData, "grid_zero", &g_mapInfoData.gridZero.x, 2);
+    JsonGetFloatArray(jsonData, "map_min", &g_mapInfoData.mapMin.x, 2);
+    JsonGetFloatArray(jsonData, "map_max", &g_mapInfoData.mapMax.x, 2);
+    g_mapInfoData.hudType = JsonGetInt(jsonData, "hud_type");
+    int newMapGeneration = JsonGetInt(jsonData, "map_generation");
     
     // Проверяем, изменилась ли карта
     if (g_lastMapGeneration != -1 && g_lastMapGeneration != newMapGeneration) {
@@ -1605,29 +1369,11 @@ void ParseMapObjects(const std::string& jsonData) {
     // Помечаем все объекты как "не обновлённые"
     for (auto& obj : g_mapObjects)
         obj.initialized = false;
-    
-    // Функция для поиска конца объекта (с учетом вложенных объектов и строк)
-    auto findObjectEnd = [](const std::string& str, size_t start) -> size_t {
-        int depth = 0;
-        bool inString = false;
-        for (size_t i = start; i < str.size(); i++) {
-            if (str[i] == '"' && (i == 0 || str[i-1] != '\\'))
-                inString = !inString;
-            if (!inString) {
-                if (str[i] == '{') depth++;
-                if (str[i] == '}') {
-                    depth--;
-                    if (depth == 0) return i + 1;
-                }
-            }
-        }
-        return std::string::npos;
-    };
-    
+
     // Парсим объекты
     size_t pos = 0;
     while ((pos = jsonData.find("{", pos)) != std::string::npos) {
-        size_t endPos = findObjectEnd(jsonData, pos);
+        size_t endPos = FindObjectEnd(jsonData, pos);
         if (endPos == std::string::npos) break;
         
         std::string objStr = jsonData.substr(pos, endPos - pos);
@@ -1725,7 +1471,7 @@ void ParseMapObjects(const std::string& jsonData) {
             }
         }
         
-        float currentTime = ImGui::GetTime();
+        float currentTime = (float)ImGui::GetTime();
         const float maxPositionChange = 0.1f; // Максимально допустимое изменение координат (10% карты)
         
         // Ищем существующий объект по нескольким критериям:
@@ -1752,8 +1498,8 @@ void ParseMapObjects(const std::string& jsonData) {
                 }
                 
                 // Проверяем изменение координат
-                float distX = newX - obj.x;
-                float distY = newY - obj.y;
+                float distX = newX - obj.pos.x;
+                float distY = newY - obj.pos.y;
                 float dist = sqrtf(distX * distX + distY * distY);
                 
                 // Если координаты изменились слишком сильно - это другой объект
@@ -1777,23 +1523,17 @@ void ParseMapObjects(const std::string& jsonData) {
         
         if (bestMatch) {
             // Сохраняем последнюю позицию и направление перед обновлением
-            bestMatch->lastX = bestMatch->x;
-            bestMatch->lastY = bestMatch->y;
-            bestMatch->lastDx = bestMatch->dx;
-            bestMatch->lastDy = bestMatch->dy;
+            bestMatch->lastPos = bestMatch->pos;
+            bestMatch->lastDir = bestMatch->dir;
             bestMatch->lastUpdateTime = currentTime;
-            
+
             // Обновляем текущие значения
-            bestMatch->x = newX;
-            bestMatch->y = newY;
-            bestMatch->dx = newDx;
-            bestMatch->dy = newDy;
-            
-            // Обновляем направление (sx, sy, ex, ey)
-            bestMatch->sx = getFloatField("sx");
-            bestMatch->sy = getFloatField("sy");
-            bestMatch->ex = getFloatField("ex");
-            bestMatch->ey = getFloatField("ey");
+            bestMatch->pos = ImVec2(newX, newY);
+            bestMatch->dir = ImVec2(newDx, newDy);
+
+            // Обновляем направление (lineStart, lineEnd)
+            bestMatch->lineStart = ImVec2(getFloatField("sx"), getFloatField("sy"));
+            bestMatch->lineEnd = ImVec2(getFloatField("ex"), getFloatField("ey"));
             
             // Обновляем цвет
             bestMatch->r = newR;
@@ -1811,14 +1551,10 @@ void ParseMapObjects(const std::string& jsonData) {
             MapObject obj;
             obj.type = type;
             obj.icon = icon;
-            obj.x = newX;
-            obj.y = newY;
-            obj.dx = newDx;
-            obj.dy = newDy;
-            obj.sx = getFloatField("sx");
-            obj.sy = getFloatField("sy");
-            obj.ex = getFloatField("ex");
-            obj.ey = getFloatField("ey");
+            obj.pos = ImVec2(newX, newY);
+            obj.dir = ImVec2(newDx, newDy);
+            obj.lineStart = ImVec2(getFloatField("sx"), getFloatField("sy"));
+            obj.lineEnd = ImVec2(getFloatField("ex"), getFloatField("ey"));
             obj.isPlayer = (icon == "Player");
             obj.r = newR;
             obj.g = newG;
@@ -1831,20 +1567,62 @@ void ParseMapObjects(const std::string& jsonData) {
         }
     }
     
+    // Сохраняем свойства выбранных юнитов перед удалением (для восстановления по свойствам, а не по индексу)
+    g_selectedUnitsBackup.clear();
+    for (size_t selIdx : g_selectedUnits) {
+        if (selIdx < g_mapObjects.size()) {
+            const auto& obj = g_mapObjects[selIdx];
+            SelectedUnitInfo info;
+            info.pos = obj.pos;
+            info.type = obj.type;
+            info.icon = obj.icon;
+            info.colorHash = obj.colorHash;
+            info.lastSeenTime = obj.lastUpdateTime;
+            g_selectedUnitsBackup.push_back(info);
+        }
+    }
+
     // Удаляем объекты, которые не были обновлены
     g_mapObjects.erase(
         std::remove_if(g_mapObjects.begin(), g_mapObjects.end(),
             [](const MapObject& obj) { return !obj.initialized; }),
         g_mapObjects.end()
     );
-    
-    // Пересчитываем индексы выбранных юнитов после удаления объектов
-    // Удаляем невалидные индексы
-    g_selectedUnits.erase(
-        std::remove_if(g_selectedUnits.begin(), g_selectedUnits.end(),
-            [](size_t idx) { return idx >= g_mapObjects.size(); }),
-        g_selectedUnits.end()
-    );
+
+    // Восстанавливаем выбранные юниты по свойствам (type, icon, colorHash, proximity)
+    g_selectedUnits.clear();
+    for (const auto& backup : g_selectedUnitsBackup) {
+        size_t bestIdx = SIZE_MAX;
+        float bestDist = FLT_MAX;
+
+        for (size_t i = 0; i < g_mapObjects.size(); i++) {
+            const auto& obj = g_mapObjects[i];
+
+            // type и icon должны совпадать
+            if (obj.type != backup.type || obj.icon != backup.icon) continue;
+
+            // colorHash должен совпадать (если есть)
+            if (!backup.colorHash.empty() && !obj.colorHash.empty() && backup.colorHash != obj.colorHash) continue;
+
+            // Вычисляем расстояние до последней известной позиции
+            float dx = obj.pos.x - backup.pos.x;
+            float dy = obj.pos.y - backup.pos.y;
+            float dist = dx * dx + dy * dy;
+
+            if (dist < bestDist) {
+                bestDist = dist;
+                bestIdx = i;
+            }
+        }
+
+        // Принимаем совпадение в пределах 10% карты
+        if (bestIdx != SIZE_MAX && bestDist < 0.1f * 0.1f) {
+            // Избегаем дублирования выбора
+            if (std::find(g_selectedUnits.begin(), g_selectedUnits.end(), bestIdx) == g_selectedUnits.end()) {
+                g_selectedUnits.push_back(bestIdx);
+            }
+        }
+    }
     
 }
 
@@ -2179,16 +1957,16 @@ void RenderUI()
             
             if (playerUnit) {
                 // Собираем все точки для отслеживания
-                float minX = playerUnit->x;
+                float minX = playerUnit->pos.x;
                 float maxX = minX;
-                float minY = playerUnit->y;
+                float minY = playerUnit->pos.y;
                 float maxY = minY;
-                
+
                 // Добавляем выбранные юниты
                 for (size_t selIdx : g_selectedUnits) {
                     if (selIdx < g_mapObjects.size()) {
-                        float x = g_mapObjects[selIdx].x;
-                        float y = g_mapObjects[selIdx].y;
+                        float x = g_mapObjects[selIdx].pos.x;
+                        float y = g_mapObjects[selIdx].pos.y;
                         if (x < minX) minX = x;
                         if (x > maxX) maxX = x;
                         if (y < minY) minY = y;
@@ -2200,10 +1978,10 @@ void RenderUI()
                 {
                     std::lock_guard<std::mutex> lock2(g_mapMarkersMutex);
                     for (const auto& marker : g_mapMarkers) {
-                        if (marker.x < minX) minX = marker.x;
-                        if (marker.x > maxX) maxX = marker.x;
-                        if (marker.y < minY) minY = marker.y;
-                        if (marker.y > maxY) maxY = marker.y;
+                        if (marker.pos.x < minX) minX = marker.pos.x;
+                        if (marker.pos.x > maxX) maxX = marker.pos.x;
+                        if (marker.pos.y < minY) minY = marker.pos.y;
+                        if (marker.pos.y > maxY) maxY = marker.pos.y;
                     }
                 }
                 
@@ -2230,7 +2008,7 @@ void RenderUI()
                 if (sidebarWidth > 400.0f) sidebarWidth = 400.0f;
                 
                 // Добавляем 1/4 от размера Content 1 как дополнительную преграду
-                float content1Obstacle = sidebarWidth * 1.445; // sidebarWidth + sidebarWidth * 0.25
+                float content1Obstacle = sidebarWidth * 1.445f; // sidebarWidth + sidebarWidth * 0.25
                 
                 // Доступная ширина = общая ширина - ширина Content 1 - дополнительный отступ
                 float windowWidth = contentSize.x - content1Obstacle;
@@ -2318,20 +2096,20 @@ void RenderUI()
                 const float originalImageSize = 2048.0f;
                 
                 // Размер карты в игровых единицах
-                float mapSizeX = g_mapInfoData.mapMax[0] - g_mapInfoData.mapMin[0];
-                float mapSizeY = g_mapInfoData.mapMax[1] - g_mapInfoData.mapMin[1];
-                
+                float mapSizeX = g_mapInfoData.mapMax.x - g_mapInfoData.mapMin.x;
+                float mapSizeY = g_mapInfoData.mapMax.y - g_mapInfoData.mapMin.y;
+
                 // Пиксели на игровую единицу (для оригинальной картинки 2048x2048)
                 float origPixelsPerUnitX = originalImageSize / mapSizeX;
                 float origPixelsPerUnitY = originalImageSize / mapSizeY;
-                
+
                 // Шаг сетки в пикселях оригинальной картинки
-                float origGridStepX = g_mapInfoData.gridSteps[0] * origPixelsPerUnitX;
-                float origGridStepY = g_mapInfoData.gridSteps[1] * origPixelsPerUnitY;
-                
+                float origGridStepX = g_mapInfoData.gridSteps.x * origPixelsPerUnitX;
+                float origGridStepY = g_mapInfoData.gridSteps.y * origPixelsPerUnitY;
+
                 // Позиция grid_zero в пикселях оригинальной картинки
-                float origGridZeroX = (g_mapInfoData.gridZero[0] - g_mapInfoData.mapMin[0]) * origPixelsPerUnitX;
-                float origGridZeroY = (g_mapInfoData.mapMax[1] - g_mapInfoData.gridZero[1]) * origPixelsPerUnitY;
+                float origGridZeroX = (g_mapInfoData.gridZero.x - g_mapInfoData.mapMin.x) * origPixelsPerUnitX;
+                float origGridZeroY = (g_mapInfoData.mapMax.y - g_mapInfoData.gridZero.y) * origPixelsPerUnitY;
                 
                 // === Масштабирование к текущему отображению ===
                 float displayScale = imgDisplaySize / originalImageSize;
@@ -2565,12 +2343,12 @@ void RenderUI()
             for (size_t i = 0; i < g_mapObjects.size(); i++) {
                 const auto& obj = g_mapObjects[i];
                 // Пропускаем объекты без координат
-                if (obj.x == 0.0f && obj.y == 0.0f && obj.type != "airfield") continue;
-                
+                if (obj.pos.x == 0.0f && obj.pos.y == 0.0f && obj.type != "airfield") continue;
+
                 // В дебаг режиме рисуем радиус клика для юнитов
                 if (g_debugMode && obj.type != "airfield" && !obj.isPlayer) {
-                    float objScreenX = contentPos.x + imgX + obj.x * imgDisplaySize;
-                    float objScreenY = contentPos.y + imgY + obj.y * imgDisplaySize;
+                    float objScreenX = contentPos.x + imgX + obj.pos.x * imgDisplaySize;
+                    float objScreenY = contentPos.y + imgY + obj.pos.y * imgDisplaySize;
                     float clickRadius = 0.002f; // Радиус в нормализованных координатах
                     float screenRadius = clickRadius * imgDisplaySize;
                     drawList->AddCircle(
@@ -2585,16 +2363,16 @@ void RenderUI()
                 // В дебаг режиме рисуем направление движения и предсказанную траекторию
                 if (g_debugMode && obj.type != "airfield" && !obj.isPlayer) {
                     // Проверяем, есть ли направление в sx/sy/ex/ey (начало и конец вектора направления)
-                    bool hasDirection = (obj.sx != 0.0f || obj.sy != 0.0f || obj.ex != 0.0f || obj.ey != 0.0f) &&
-                                        (fabsf(obj.ex - obj.sx) > 0.0001f || fabsf(obj.ey - obj.sy) > 0.0001f);
-                    
+                    bool hasDirection = (obj.lineStart.x != 0.0f || obj.lineStart.y != 0.0f || obj.lineEnd.x != 0.0f || obj.lineEnd.y != 0.0f) &&
+                                        (fabsf(obj.lineEnd.x - obj.lineStart.x) > 0.0001f || fabsf(obj.lineEnd.y - obj.lineStart.y) > 0.0001f);
+
                     if (hasDirection) {
-                        float objScreenX = contentPos.x + imgX + obj.x * imgDisplaySize;
-                        float objScreenY = contentPos.y + imgY + obj.y * imgDisplaySize;
-                        
-                        // Вычисляем направление из sx/sy -> ex/ey
-                        float dirX = obj.ex - obj.sx;
-                        float dirY = obj.ey - obj.sy;
+                        float objScreenX = contentPos.x + imgX + obj.pos.x * imgDisplaySize;
+                        float objScreenY = contentPos.y + imgY + obj.pos.y * imgDisplaySize;
+
+                        // Вычисляем направление из lineStart -> lineEnd
+                        float dirX = obj.lineEnd.x - obj.lineStart.x;
+                        float dirY = obj.lineEnd.y - obj.lineStart.y;
                         float dirLen = sqrtf(dirX * dirX + dirY * dirY);
                         
                         if (dirLen > 0.0001f) {
@@ -2641,8 +2419,8 @@ void RenderUI()
                             float stepSize = 0.01f; // Размер шага в нормализованных координатах (уменьшено в 10 раз)
                             
                             ImVec2 prevPoint(objScreenX, objScreenY);
-                            float currentX = obj.x;
-                            float currentY = obj.y;
+                            float currentX = obj.pos.x;
+                            float currentY = obj.pos.y;
                             
                             for (int step = 1; step <= 3; step++) {
                                 // Предсказываем позицию на шаг вперед по направлению
@@ -2683,19 +2461,19 @@ void RenderUI()
                 
                 // Аэродром - рисуем линию (толщина масштабируется с зумом, в 2 раза толще чем в браузере)
                 if (obj.type == "airfield") {
-                    float startX = contentPos.x + imgX + obj.sx * imgDisplaySize;
-                    float startY = contentPos.y + imgY + obj.sy * imgDisplaySize;
-                    float endX = contentPos.x + imgX + obj.ex * imgDisplaySize;
-                    float endY = contentPos.y + imgY + obj.ey * imgDisplaySize;
+                    float startX = contentPos.x + imgX + obj.lineStart.x * imgDisplaySize;
+                    float startY = contentPos.y + imgY + obj.lineStart.y * imgDisplaySize;
+                    float endX = contentPos.x + imgX + obj.lineEnd.x * imgDisplaySize;
+                    float endY = contentPos.y + imgY + obj.lineEnd.y * imgDisplaySize;
                     float lineWidth = 5.0f * sqrtf(g_mapZoom); // В 2 раза толще чем в браузере (было 3.0 * sqrt(map_scale))
                     drawList->AddLine(ImVec2(startX, startY), ImVec2(endX, endY), objColor, lineWidth);
                     continue;
                 }
                 
                 // Вычисляем позицию на экране (нормализованные координаты 0-1)
-                float objScreenX = contentPos.x + imgX + obj.x * imgDisplaySize;
-                float objScreenY = contentPos.y + imgY + obj.y * imgDisplaySize;
-                
+                float objScreenX = contentPos.x + imgX + obj.pos.x * imgDisplaySize;
+                float objScreenY = contentPos.y + imgY + obj.pos.y * imgDisplaySize;
+
                 // Визуальное выделение выбранных юнитов
                 bool selected = isSelected[i];
                 if (selected) {
@@ -2720,11 +2498,11 @@ void RenderUI()
                     if (objSize < 6.0f) objSize = 6.0f;
                     if (objSize > 16.0f) objSize = 16.0f;
                     
-                    float angle = atan2f(-obj.dy, obj.dx);
+                    float angle = atan2f(-obj.dir.y, obj.dir.x);
                     ImVec2 p1(objScreenX + cosf(angle) * objSize, objScreenY - sinf(angle) * objSize);
                     ImVec2 p2(objScreenX + cosf(angle + 2.4f) * objSize * 0.6f, objScreenY - sinf(angle + 2.4f) * objSize * 0.6f);
                     ImVec2 p3(objScreenX + cosf(angle - 2.4f) * objSize * 0.6f, objScreenY - sinf(angle - 2.4f) * objSize * 0.6f);
-                    
+
                     // Белая обводка
                     drawList->AddTriangle(p1, p2, p3, IM_COL32(255, 255, 255, 255), 2.0f);
                     // Заливка цветом
@@ -2780,7 +2558,7 @@ void RenderUI()
                         // Для respawn_base_fighter и respawn_base_bomber - поворот по направлению (как в браузере)
                         bool rotate = (obj.type == "respawn_base_fighter") || (obj.type == "respawn_base_bomber");
                         
-                        if (rotate && (obj.dx != 0.0f || obj.dy != 0.0f)) {
+                        if (rotate && (obj.dir.x != 0.0f || obj.dir.y != 0.0f)) {
                             // В браузере используется ctx.rotate, но в ImGui нет прямого поворота текста
                             // Используем упрощенный вариант - рисуем без поворота, но с учетом направления
                             // Для respawn_base обычно dx/dy указывают направление взлета
@@ -2801,7 +2579,7 @@ void RenderUI()
                     
                     if (obj.type == "aircraft") {
                         objSize = 8.0f;
-                        float angle = atan2f(-obj.dy, obj.dx);
+                        float angle = atan2f(-obj.dir.y, obj.dir.x);
                         ImVec2 p1(objScreenX + cosf(angle) * objSize, objScreenY - sinf(angle) * objSize);
                         ImVec2 p2(objScreenX + cosf(angle + 2.4f) * objSize * 0.6f, objScreenY - sinf(angle + 2.4f) * objSize * 0.6f);
                         ImVec2 p3(objScreenX + cosf(angle - 2.4f) * objSize * 0.6f, objScreenY - sinf(angle - 2.4f) * objSize * 0.6f);
@@ -2846,11 +2624,11 @@ void RenderUI()
         // Отрисовываем метки (в обратном порядке для правильного hover)
         for (int mi = (int)g_mapMarkers.size() - 1; mi >= 0; mi--) {
             const auto& marker = g_mapMarkers[mi];
-            float markerScreenX = contentPos.x + imgX + marker.x * imgDisplaySize;
-            float markerScreenY = contentPos.y + imgY + marker.y * imgDisplaySize;
-            
+            float markerScreenX = contentPos.x + imgX + marker.pos.x * imgDisplaySize;
+            float markerScreenY = contentPos.y + imgY + marker.pos.y * imgDisplaySize;
+
             ImU32 markerColor = IM_COL32(marker.r, marker.g, marker.b, 255);
-            
+
             // Рисуем метку (ромб)
             float size = 8.0f;
             drawList->AddQuadFilled(
@@ -2930,8 +2708,7 @@ void RenderUI()
                     if (!g_wasDragging) {
                         // Всегда добавляем метку без очистки предыдущих
                         MapMarker marker;
-                        marker.x = normX;
-                        marker.y = normY;
+                        marker.pos = ImVec2(normX, normY);
                         marker.r = 255;
                         marker.g = 200;
                         marker.b = 0;
@@ -2957,17 +2734,17 @@ void RenderUI()
                             if (obj.type == "airfield" || obj.isPlayer) continue;
                             
                             // Проверяем попадание в радиус юнита
-                            float distX = obj.x - normX;
-                            float distY = obj.y - normY;
+                            float distX = obj.pos.x - normX;
+                            float distY = obj.pos.y - normY;
                             float dist = sqrtf(distX * distX + distY * distY);
-                            
+
                             if (dist <= clickRadius) {
                                 foundIdx = i;
                                 break; // Берем первый попавшийся в радиусе
                             }
                         }
                     }
-                    
+
                     // Если мышь в радиусе юнита, обрабатываем клик
                     if (foundIdx != SIZE_MAX) {
                         bool isSelected = std::find(g_selectedUnits.begin(), g_selectedUnits.end(), foundIdx) != g_selectedUnits.end();
@@ -2993,8 +2770,8 @@ void RenderUI()
                         
                         for (int mi = (int)g_mapMarkers.size() - 1; mi >= 0; mi--) {
                             const auto& marker = g_mapMarkers[mi];
-                            float markerScreenX = contentPos.x + imgX + marker.x * imgDisplaySize;
-                            float markerScreenY = contentPos.y + imgY + marker.y * imgDisplaySize;
+                            float markerScreenX = contentPos.x + imgX + marker.pos.x * imgDisplaySize;
+                            float markerScreenY = contentPos.y + imgY + marker.pos.y * imgDisplaySize;
                             
                             float dx = mousePos.x - markerScreenX;
                             float dy = mousePos.y - markerScreenY;
@@ -3022,8 +2799,8 @@ void RenderUI()
                                 if (obj.type == "airfield" || obj.isPlayer) continue;
                                 
                                 // Проверяем попадание в радиус юнита
-                                float distX = obj.x - normX;
-                                float distY = obj.y - normY;
+                                float distX = obj.pos.x - normX;
+                                float distY = obj.pos.y - normY;
                                 float dist = sqrtf(distX * distX + distY * distY);
                                 
                                 if (dist <= clickRadius) {
@@ -3049,379 +2826,130 @@ void RenderUI()
     
     // === ОТРИСОВКА ЛИНИЙ И РАССТОЯНИЙ ===
     {
-        float baseImageSize = 2048.0f;
-        float imgDisplaySize = baseImageSize * g_mapZoom;
-        float imgX = contentSize.x * 0.5f + g_mapOffsetX - imgDisplaySize * 0.5f;
-        float imgY = contentSize.y * 0.5f + g_mapOffsetY - imgDisplaySize * 0.5f;
-        
+        MapDisplayContext ctx(contentSize, contentPos, g_mapZoom, g_mapOffsetX, g_mapOffsetY);
         ImDrawList* drawList = ImGui::GetWindowDrawList();
-        
+
+        // Получаем скорость игрока для расчета ETA
+        float playerSpeedKmh = 0.0f;
+        {
+            std::lock_guard<std::mutex> lockSpeed(g_indicatorsMutex);
+            playerSpeedKmh = g_indicatorsData.speed;
+        }
+
         // Рисуем линии от игрока к выбранным юнитам
         {
             std::lock_guard<std::mutex> lock(g_mapObjectsMutex);
             std::lock_guard<std::mutex> lock2(g_mapInfoMutex);
-            
+
             if (!g_selectedUnits.empty() && g_mapInfoData.valid) {
-                // Находим игрока
-                const MapObject* playerUnit = nullptr;
-                for (const auto& obj : g_mapObjects) {
-                    if (obj.isPlayer) {
-                        playerUnit = &obj;
-                        break;
-                    }
-                }
-                
+                const MapObject* playerUnit = FindPlayerUnit(g_mapObjects);
                 if (playerUnit) {
-                    float mapSizeX = g_mapInfoData.mapMax[0] - g_mapInfoData.mapMin[0];
-                    float mapSizeY = g_mapInfoData.mapMax[1] - g_mapInfoData.mapMin[1];
-                    
-                    float playerScreenX = contentPos.x + imgX + playerUnit->x * imgDisplaySize;
-                    float playerScreenY = contentPos.y + imgY + playerUnit->y * imgDisplaySize;
-                    
-                    float playerGameX = g_mapInfoData.mapMin[0] + playerUnit->x * mapSizeX;
-                    float playerGameY = g_mapInfoData.mapMax[1] - playerUnit->y * mapSizeY;
-                    
                     for (size_t selIdx : g_selectedUnits) {
                         if (selIdx >= g_mapObjects.size()) continue;
                         const auto& unit = g_mapObjects[selIdx];
-                        
-                        float unitScreenX = contentPos.x + imgX + unit.x * imgDisplaySize;
-                        float unitScreenY = contentPos.y + imgY + unit.y * imgDisplaySize;
-                        
-                        // Рисуем линию (жёлтая для игрок-юнит)
-                        drawList->AddLine(
-                            ImVec2(playerScreenX, playerScreenY),
-                            ImVec2(unitScreenX, unitScreenY),
-                            IM_COL32(255, 255, 0, 180),
-                            2.0f
-                        );
-                        
-                        // Вычисляем дистанцию
-                        float unitGameX = g_mapInfoData.mapMin[0] + unit.x * mapSizeX;
-                        float unitGameY = g_mapInfoData.mapMax[1] - unit.y * mapSizeY;
-                        
-                        double distX = (double)unitGameX - (double)playerGameX;
-                        double distY = (double)unitGameY - (double)playerGameY;
-                        float distMeters = (float)sqrt(distX * distX + distY * distY);
-                        float distKm = distMeters / 1000.0f;
-                        
-                        float midX = (playerScreenX + unitScreenX) * 0.5f;
-                        float midY = (playerScreenY + unitScreenY) * 0.5f;
-                        
-                        char distText[32];
-                        if (distKm >= 1.0f)
-                            snprintf(distText, sizeof(distText), "%.3f km", distKm);
-                        else
-                            snprintf(distText, sizeof(distText), "%.0f m", distMeters);
-                        
-                        ImVec2 textSize = ImGui::CalcTextSize(distText);
-                        drawList->AddRectFilled(
-                            ImVec2(midX - textSize.x * 0.5f - 3, midY - textSize.y * 0.5f - 2),
-                            ImVec2(midX + textSize.x * 0.5f + 3, midY + textSize.y * 0.5f + 2),
-                            IM_COL32(0, 0, 0, 180),
-                            3.0f
-                        );
-                        drawList->AddText(
-                            ImVec2(midX - textSize.x * 0.5f, midY - textSize.y * 0.5f),
-                            IM_COL32(255, 255, 0, 255),
-                            distText
-                        );
+                        DrawLineWithDistance(drawList, ctx,
+                            playerUnit->pos.x, playerUnit->pos.y, unit.pos.x, unit.pos.y,
+                            g_mapInfoData, IM_COL32(255, 255, 0, 180), IM_COL32(255, 255, 0, 255),
+                            2.0f, playerSpeedKmh);
                     }
                 }
             }
         }
-        
+
         // Рисуем линии между выбранными юнитами
         {
             std::lock_guard<std::mutex> lock(g_mapObjectsMutex);
             std::lock_guard<std::mutex> lock2(g_mapInfoMutex);
-            
+
             if (g_selectedUnits.size() >= 2 && g_mapInfoData.valid) {
-                float mapSizeX = g_mapInfoData.mapMax[0] - g_mapInfoData.mapMin[0];
-                float mapSizeY = g_mapInfoData.mapMax[1] - g_mapInfoData.mapMin[1];
-                
                 for (size_t i = 0; i < g_selectedUnits.size(); i++) {
                     for (size_t j = i + 1; j < g_selectedUnits.size(); j++) {
                         size_t idx1 = g_selectedUnits[i];
                         size_t idx2 = g_selectedUnits[j];
-                        
                         if (idx1 >= g_mapObjects.size() || idx2 >= g_mapObjects.size()) continue;
-                        
                         const auto& unit1 = g_mapObjects[idx1];
                         const auto& unit2 = g_mapObjects[idx2];
-                        
-                        float unit1ScreenX = contentPos.x + imgX + unit1.x * imgDisplaySize;
-                        float unit1ScreenY = contentPos.y + imgY + unit1.y * imgDisplaySize;
-                        float unit2ScreenX = contentPos.x + imgX + unit2.x * imgDisplaySize;
-                        float unit2ScreenY = contentPos.y + imgY + unit2.y * imgDisplaySize;
-                        
-                        // Рисуем линию (зелёная для юнит-юнит)
-                        drawList->AddLine(
-                            ImVec2(unit1ScreenX, unit1ScreenY),
-                            ImVec2(unit2ScreenX, unit2ScreenY),
-                            IM_COL32(100, 255, 100, 180),
-                            2.0f
-                        );
-                        
-                        // Вычисляем дистанцию
-                        float unit1GameX = g_mapInfoData.mapMin[0] + unit1.x * mapSizeX;
-                        float unit1GameY = g_mapInfoData.mapMax[1] - unit1.y * mapSizeY;
-                        float unit2GameX = g_mapInfoData.mapMin[0] + unit2.x * mapSizeX;
-                        float unit2GameY = g_mapInfoData.mapMax[1] - unit2.y * mapSizeY;
-                        
-                        double distX = (double)unit2GameX - (double)unit1GameX;
-                        double distY = (double)unit2GameY - (double)unit1GameY;
-                        float distMeters = (float)sqrt(distX * distX + distY * distY);
-                        float distKm = distMeters / 1000.0f;
-                        
-                        float midX = (unit1ScreenX + unit2ScreenX) * 0.5f;
-                        float midY = (unit1ScreenY + unit2ScreenY) * 0.5f;
-                        
-                        char distText[32];
-                        if (distKm >= 1.0f)
-                            snprintf(distText, sizeof(distText), "%.3f km", distKm);
-                        else
-                            snprintf(distText, sizeof(distText), "%.0f m", distMeters);
-                        
-                        ImVec2 textSize = ImGui::CalcTextSize(distText);
-                        drawList->AddRectFilled(
-                            ImVec2(midX - textSize.x * 0.5f - 3, midY - textSize.y * 0.5f - 2),
-                            ImVec2(midX + textSize.x * 0.5f + 3, midY + textSize.y * 0.5f + 2),
-                            IM_COL32(0, 0, 0, 180),
-                            3.0f
-                        );
-                        drawList->AddText(
-                            ImVec2(midX - textSize.x * 0.5f, midY - textSize.y * 0.5f),
-                            IM_COL32(100, 255, 100, 255),
-                            distText
-                        );
+                        DrawLineWithDistance(drawList, ctx,
+                            unit1.pos.x, unit1.pos.y, unit2.pos.x, unit2.pos.y,
+                            g_mapInfoData, IM_COL32(100, 255, 100, 180), IM_COL32(100, 255, 100, 255));
                     }
                 }
             }
         }
-        
-        // Рисуем линии от игрока к меткам
+
+        // Рисуем линии от игрока к меткам (с ETA)
         {
             std::lock_guard<std::mutex> lock(g_mapObjectsMutex);
             std::lock_guard<std::mutex> lock2(g_mapMarkersMutex);
             std::lock_guard<std::mutex> lock3(g_mapInfoMutex);
-            
+
             if (!g_mapMarkers.empty() && g_mapInfoData.valid) {
-                // Находим игрока
-                const MapObject* playerUnit = nullptr;
-                for (const auto& obj : g_mapObjects) {
-                    if (obj.isPlayer) {
-                        playerUnit = &obj;
-                        break;
-                    }
-                }
-                
+                const MapObject* playerUnit = FindPlayerUnit(g_mapObjects);
                 if (playerUnit) {
-                    float mapSizeX = g_mapInfoData.mapMax[0] - g_mapInfoData.mapMin[0];
-                    float mapSizeY = g_mapInfoData.mapMax[1] - g_mapInfoData.mapMin[1];
-                    
-                    float playerScreenX = contentPos.x + imgX + playerUnit->x * imgDisplaySize;
-                    float playerScreenY = contentPos.y + imgY + playerUnit->y * imgDisplaySize;
-                    
-                    float playerGameX = g_mapInfoData.mapMin[0] + playerUnit->x * mapSizeX;
-                    float playerGameY = g_mapInfoData.mapMax[1] - playerUnit->y * mapSizeY;
-                    
                     for (const auto& marker : g_mapMarkers) {
-                        float markerScreenX = contentPos.x + imgX + marker.x * imgDisplaySize;
-                        float markerScreenY = contentPos.y + imgY + marker.y * imgDisplaySize;
-                        
-                        // Рисуем линию (оранжевая для меток)
-                        drawList->AddLine(
-                            ImVec2(playerScreenX, playerScreenY),
-                            ImVec2(markerScreenX, markerScreenY),
-                            IM_COL32(255, 150, 0, 180),
-                            2.0f
-                        );
-                        
-                        // Вычисляем дистанцию
-                        float markerGameX = g_mapInfoData.mapMin[0] + marker.x * mapSizeX;
-                        float markerGameY = g_mapInfoData.mapMax[1] - marker.y * mapSizeY;
-                        
-                        double distX = (double)markerGameX - (double)playerGameX;
-                        double distY = (double)markerGameY - (double)playerGameY;
-                        float distMeters = (float)sqrt(distX * distX + distY * distY);
-                        float distKm = distMeters / 1000.0f;
-                        
-                        float midX = (playerScreenX + markerScreenX) * 0.5f;
-                        float midY = (playerScreenY + markerScreenY) * 0.5f;
-                        
-                        char distText[32];
-                        if (distKm >= 1.0f)
-                            snprintf(distText, sizeof(distText), "%.3f km", distKm);
-                        else
-                            snprintf(distText, sizeof(distText), "%.0f m", distMeters);
-                        
-                        ImVec2 textSize = ImGui::CalcTextSize(distText);
-                        drawList->AddRectFilled(
-                            ImVec2(midX - textSize.x * 0.5f - 3, midY - textSize.y * 0.5f - 2),
-                            ImVec2(midX + textSize.x * 0.5f + 3, midY + textSize.y * 0.5f + 2),
-                            IM_COL32(0, 0, 0, 180),
-                            3.0f
-                        );
-                        drawList->AddText(
-                            ImVec2(midX - textSize.x * 0.5f, midY - textSize.y * 0.5f),
-                            IM_COL32(255, 150, 0, 255),
-                            distText
-                        );
+                        DrawLineWithDistance(drawList, ctx,
+                            playerUnit->pos.x, playerUnit->pos.y, marker.pos.x, marker.pos.y,
+                            g_mapInfoData, IM_COL32(255, 150, 0, 180), IM_COL32(255, 150, 0, 255),
+                            2.0f, playerSpeedKmh);
                     }
                 }
             }
-            
+
             // Рисуем линии между выбранными юнитами и метками
             if (!g_selectedUnits.empty() && !g_mapMarkers.empty() && g_mapInfoData.valid) {
-                float mapSizeX = g_mapInfoData.mapMax[0] - g_mapInfoData.mapMin[0];
-                float mapSizeY = g_mapInfoData.mapMax[1] - g_mapInfoData.mapMin[1];
-                
                 for (size_t selIdx : g_selectedUnits) {
                     if (selIdx >= g_mapObjects.size()) continue;
                     const auto& unit = g_mapObjects[selIdx];
-                    
-                    float unitScreenX = contentPos.x + imgX + unit.x * imgDisplaySize;
-                    float unitScreenY = contentPos.y + imgY + unit.y * imgDisplaySize;
-                    
-                    float unitGameX = g_mapInfoData.mapMin[0] + unit.x * mapSizeX;
-                    float unitGameY = g_mapInfoData.mapMax[1] - unit.y * mapSizeY;
-                    
                     for (const auto& marker : g_mapMarkers) {
-                        float markerScreenX = contentPos.x + imgX + marker.x * imgDisplaySize;
-                        float markerScreenY = contentPos.y + imgY + marker.y * imgDisplaySize;
-                        
-                        // Рисуем линию (голубая для юнит-метка)
-                        drawList->AddLine(
-                            ImVec2(unitScreenX, unitScreenY),
-                            ImVec2(markerScreenX, markerScreenY),
-                            IM_COL32(0, 200, 255, 180),
-                            2.0f
-                        );
-                        
-                        // Вычисляем дистанцию
-                        float markerGameX = g_mapInfoData.mapMin[0] + marker.x * mapSizeX;
-                        float markerGameY = g_mapInfoData.mapMax[1] - marker.y * mapSizeY;
-                        
-                        double distX = (double)markerGameX - (double)unitGameX;
-                        double distY = (double)markerGameY - (double)unitGameY;
-                        float distMeters = (float)sqrt(distX * distX + distY * distY);
-                        float distKm = distMeters / 1000.0f;
-                        
-                        float midX = (unitScreenX + markerScreenX) * 0.5f;
-                        float midY = (unitScreenY + markerScreenY) * 0.5f;
-                        
-                        char distText[32];
-                        if (distKm >= 1.0f)
-                            snprintf(distText, sizeof(distText), "%.3f km", distKm);
-                        else
-                            snprintf(distText, sizeof(distText), "%.0f m", distMeters);
-                        
-                        ImVec2 textSize = ImGui::CalcTextSize(distText);
-                        drawList->AddRectFilled(
-                            ImVec2(midX - textSize.x * 0.5f - 3, midY - textSize.y * 0.5f - 2),
-                            ImVec2(midX + textSize.x * 0.5f + 3, midY + textSize.y * 0.5f + 2),
-                            IM_COL32(0, 0, 0, 180),
-                            3.0f
-                        );
-                        drawList->AddText(
-                            ImVec2(midX - textSize.x * 0.5f, midY - textSize.y * 0.5f),
-                            IM_COL32(0, 200, 255, 255),
-                            distText
-                        );
+                        DrawLineWithDistance(drawList, ctx,
+                            unit.pos.x, unit.pos.y, marker.pos.x, marker.pos.y,
+                            g_mapInfoData, IM_COL32(0, 200, 255, 180), IM_COL32(0, 200, 255, 255));
                     }
                 }
             }
-            
-            // Рисуем линии между метками (если их несколько)
+
+            // Рисуем линии между метками
             if (g_mapMarkers.size() >= 2 && g_mapInfoData.valid) {
-                float mapSizeX = g_mapInfoData.mapMax[0] - g_mapInfoData.mapMin[0];
-                float mapSizeY = g_mapInfoData.mapMax[1] - g_mapInfoData.mapMin[1];
-                
                 for (size_t i = 0; i < g_mapMarkers.size(); i++) {
                     for (size_t j = i + 1; j < g_mapMarkers.size(); j++) {
-                        const auto& marker1 = g_mapMarkers[i];
-                        const auto& marker2 = g_mapMarkers[j];
-                        
-                        float marker1ScreenX = contentPos.x + imgX + marker1.x * imgDisplaySize;
-                        float marker1ScreenY = contentPos.y + imgY + marker1.y * imgDisplaySize;
-                        float marker2ScreenX = contentPos.x + imgX + marker2.x * imgDisplaySize;
-                        float marker2ScreenY = contentPos.y + imgY + marker2.y * imgDisplaySize;
-                        
-                        // Рисуем линию (жёлтая для метка-метка)
-                        drawList->AddLine(
-                            ImVec2(marker1ScreenX, marker1ScreenY),
-                            ImVec2(marker2ScreenX, marker2ScreenY),
-                            IM_COL32(255, 200, 0, 150),
-                            1.5f
-                        );
-                        
-                        // Вычисляем дистанцию
-                        float marker1GameX = g_mapInfoData.mapMin[0] + marker1.x * mapSizeX;
-                        float marker1GameY = g_mapInfoData.mapMax[1] - marker1.y * mapSizeY;
-                        float marker2GameX = g_mapInfoData.mapMin[0] + marker2.x * mapSizeX;
-                        float marker2GameY = g_mapInfoData.mapMax[1] - marker2.y * mapSizeY;
-                        
-                        double distX = (double)marker2GameX - (double)marker1GameX;
-                        double distY = (double)marker2GameY - (double)marker1GameY;
-                        float distMeters = (float)sqrt(distX * distX + distY * distY);
-                        float distKm = distMeters / 1000.0f;
-                        
-                        float midX = (marker1ScreenX + marker2ScreenX) * 0.5f;
-                        float midY = (marker1ScreenY + marker2ScreenY) * 0.5f;
-                        
-                        char distText[32];
-                        if (distKm >= 1.0f)
-                            snprintf(distText, sizeof(distText), "%.3f km", distKm);
-                        else
-                            snprintf(distText, sizeof(distText), "%.0f m", distMeters);
-                        
-                        ImVec2 textSize = ImGui::CalcTextSize(distText);
-                        drawList->AddRectFilled(
-                            ImVec2(midX - textSize.x * 0.5f - 3, midY - textSize.y * 0.5f - 2),
-                            ImVec2(midX + textSize.x * 0.5f + 3, midY + textSize.y * 0.5f + 2),
-                            IM_COL32(0, 0, 0, 180),
-                            3.0f
-                        );
-                        drawList->AddText(
-                            ImVec2(midX - textSize.x * 0.5f, midY - textSize.y * 0.5f),
-                            IM_COL32(255, 200, 0, 255),
-                            distText
-                        );
+                        DrawLineWithDistance(drawList, ctx,
+                            g_mapMarkers[i].pos.x, g_mapMarkers[i].pos.y,
+                            g_mapMarkers[j].pos.x, g_mapMarkers[j].pos.y,
+                            g_mapInfoData, IM_COL32(255, 200, 0, 150), IM_COL32(255, 200, 0, 255), 1.5f);
                     }
                 }
             }
         }
     }
-    
+
     // === ОТРИСОВКА ДЕБАГ ИНФОРМАЦИИ ===
     if (g_debugMode) {
         ImVec2 mousePos = ImGui::GetMousePos();
         ImVec2 contentScreenPos = ImGui::GetWindowPos();
         ImVec2 contentSize = ImGui::GetContentRegionAvail();
-        
+
         float baseImageSize = 2048.0f;
         float imgDisplaySize = baseImageSize * g_mapZoom;
         float imgX = contentSize.x * 0.5f + g_mapOffsetX - imgDisplaySize * 0.5f;
         float imgY = contentSize.y * 0.5f + g_mapOffsetY - imgDisplaySize * 0.5f;
-        
+
         // Вычисляем позицию курсора относительно карты
         float mouseRelX = mousePos.x - contentScreenPos.x - imgX;
         float mouseRelY = mousePos.y - contentScreenPos.y - imgY;
-        
+
         // Нормализованные координаты (0-1)
         float normalizedX = mouseRelX / imgDisplaySize;
         float normalizedY = mouseRelY / imgDisplaySize;
-        
+
         // Игровые координаты (из map_info)
         float gameX = 0.0f, gameY = 0.0f;
         {
             std::lock_guard<std::mutex> lock(g_mapInfoMutex);
             if (g_mapInfoData.valid) {
-                float mapSizeX = g_mapInfoData.mapMax[0] - g_mapInfoData.mapMin[0];
-                float mapSizeY = g_mapInfoData.mapMax[1] - g_mapInfoData.mapMin[1];
-                gameX = g_mapInfoData.mapMin[0] + normalizedX * mapSizeX;
-                gameY = g_mapInfoData.mapMax[1] - normalizedY * mapSizeY; // Y инвертирован
+                float mapSizeX = g_mapInfoData.mapMax.x - g_mapInfoData.mapMin.x;
+                float mapSizeY = g_mapInfoData.mapMax.y - g_mapInfoData.mapMin.y;
+                gameX = g_mapInfoData.mapMin.x + normalizedX * mapSizeX;
+                gameY = g_mapInfoData.mapMax.y - normalizedY * mapSizeY; // Y инвертирован
             }
         }
         
@@ -3434,8 +2962,8 @@ void RenderUI()
                 if (obj.type == "airfield") continue; // Пропускаем аэродромы
                 
                 // Вычисляем позицию юнита на экране
-                float objScreenX = contentScreenPos.x + imgX + obj.x * imgDisplaySize;
-                float objScreenY = contentScreenPos.y + imgY + obj.y * imgDisplaySize;
+                float objScreenX = contentScreenPos.x + imgX + obj.pos.x * imgDisplaySize;
+                float objScreenY = contentScreenPos.y + imgY + obj.pos.y * imgDisplaySize;
                 
                 // Расстояние от курсора до юнита
                 float dx = mousePos.x - objScreenX;
@@ -3471,12 +2999,12 @@ void RenderUI()
             if (g_mapInfoData.hudType == 0) {
                 // hud_type = 0 (авиа): сетка от левого верхнего угла
                 // Вычисляем позицию относительно mapMin
-                float offsetX = gameX - g_mapInfoData.mapMin[0];
-                float offsetY = g_mapInfoData.mapMax[1] - gameY; // Y инвертирован
-                
+                float offsetX = gameX - g_mapInfoData.mapMin.x;
+                float offsetY = g_mapInfoData.mapMax.y - gameY; // Y инвертирован
+
                 // Вычисляем номер ячейки
-                int cellX = (int)std::floor(offsetX / g_mapInfoData.gridSteps[0]);
-                int cellY = (int)std::floor(offsetY / g_mapInfoData.gridSteps[1]);
+                int cellX = (int)std::floor(offsetX / g_mapInfoData.gridSteps.x);
+                int cellY = (int)std::floor(offsetY / g_mapInfoData.gridSteps.y);
                 
                 // X начинается с 1, Y с 0 (A, B, C...)
                 int letterIndex = cellY;
@@ -3496,22 +3024,22 @@ void RenderUI()
             } else {
                 // hud_type = 1 (танки): сетка от grid_zero
                 // Вычисляем смещение от grid_zero
-                float offsetX = gameX - g_mapInfoData.gridZero[0];
-                float offsetY = gameY - g_mapInfoData.gridZero[1];
-                
+                float offsetX = gameX - g_mapInfoData.gridZero.x;
+                float offsetY = gameY - g_mapInfoData.gridZero.y;
+
                 // Вычисляем номер ячейки
-                int cellX = (int)std::floor(offsetX / g_mapInfoData.gridSteps[0]);
-                int cellY = (int)std::floor(offsetY / g_mapInfoData.gridSteps[1]);
-                
+                int cellX = (int)std::floor(offsetX / g_mapInfoData.gridSteps.x);
+                int cellY = (int)std::floor(offsetY / g_mapInfoData.gridSteps.y);
+
                 // Вычисляем индекс первой ячейки (как в отрисовке сетки)
-                float mapSizeX = g_mapInfoData.mapMax[0] - g_mapInfoData.mapMin[0];
-                float mapSizeY = g_mapInfoData.mapMax[1] - g_mapInfoData.mapMin[1];
+                float mapSizeX = g_mapInfoData.mapMax.x - g_mapInfoData.mapMin.x;
+                float mapSizeY = g_mapInfoData.mapMax.y - g_mapInfoData.mapMin.y;
                 float origPixelsPerUnitX = 2048.0f / mapSizeX;
                 float origPixelsPerUnitY = 2048.0f / mapSizeY;
-                float origGridStepX = g_mapInfoData.gridSteps[0] * origPixelsPerUnitX;
-                float origGridStepY = g_mapInfoData.gridSteps[1] * origPixelsPerUnitY;
-                float origGridZeroX = (g_mapInfoData.gridZero[0] - g_mapInfoData.mapMin[0]) * origPixelsPerUnitX;
-                float origGridZeroY = (g_mapInfoData.mapMax[1] - g_mapInfoData.gridZero[1]) * origPixelsPerUnitY;
+                float origGridStepX = g_mapInfoData.gridSteps.x * origPixelsPerUnitX;
+                float origGridStepY = g_mapInfoData.gridSteps.y * origPixelsPerUnitY;
+                float origGridZeroX = (g_mapInfoData.gridZero.x - g_mapInfoData.mapMin.x) * origPixelsPerUnitX;
+                float origGridZeroY = (g_mapInfoData.mapMax.y - g_mapInfoData.gridZero.y) * origPixelsPerUnitY;
                 
                 float cellsFromLeftToZero = origGridZeroX / origGridStepX;
                 float cellsFromTopToZero = origGridZeroY / origGridStepY;
@@ -3553,10 +3081,10 @@ void RenderUI()
             {
                 std::lock_guard<std::mutex> lock(g_mapInfoMutex);
                 if (g_mapInfoData.valid) {
-                    float mapSizeX = g_mapInfoData.mapMax[0] - g_mapInfoData.mapMin[0];
-                    float mapSizeY = g_mapInfoData.mapMax[1] - g_mapInfoData.mapMin[1];
-                    unitGameX = g_mapInfoData.mapMin[0] + hoveredUnit->x * mapSizeX;
-                    unitGameY = g_mapInfoData.mapMax[1] - hoveredUnit->y * mapSizeY;
+                    float mapSizeX = g_mapInfoData.mapMax.x - g_mapInfoData.mapMin.x;
+                    float mapSizeY = g_mapInfoData.mapMax.y - g_mapInfoData.mapMin.y;
+                    unitGameX = g_mapInfoData.mapMin.x + hoveredUnit->pos.x * mapSizeX;
+                    unitGameY = g_mapInfoData.mapMax.y - hoveredUnit->pos.y * mapSizeY;
                 }
             }
             
@@ -3582,10 +3110,10 @@ void RenderUI()
                 {
                     std::lock_guard<std::mutex> lock(g_mapInfoMutex);
                     if (g_mapInfoData.valid) {
-                        float mapSizeX = g_mapInfoData.mapMax[0] - g_mapInfoData.mapMin[0];
-                        float mapSizeY = g_mapInfoData.mapMax[1] - g_mapInfoData.mapMin[1];
-                        playerGameX = g_mapInfoData.mapMin[0] + playerUnit->x * mapSizeX;
-                        playerGameY = g_mapInfoData.mapMax[1] - playerUnit->y * mapSizeY;
+                        float mapSizeX = g_mapInfoData.mapMax.x - g_mapInfoData.mapMin.x;
+                        float mapSizeY = g_mapInfoData.mapMax.y - g_mapInfoData.mapMin.y;
+                        playerGameX = g_mapInfoData.mapMin.x + playerUnit->pos.x * mapSizeX;
+                        playerGameY = g_mapInfoData.mapMax.y - playerUnit->pos.y * mapSizeY;
                     }
                 }
                 
@@ -3723,37 +3251,7 @@ void RenderUI()
     }
     ImGui::Separator();
     ImGui::Spacing();
-    
-    // Функция для парсинга float из JSON
-    auto parseJsonFloat = [](const std::string& str, const std::string& key) -> float {
-        size_t pos = str.find("\"" + key + "\"");
-        if (pos != std::string::npos) {
-            pos = str.find(":", pos);
-            if (pos != std::string::npos) {
-                pos++;
-                while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t'))
-                    pos++;
-                return static_cast<float>(std::atof(str.substr(pos).c_str()));
-            }
-        }
-        return 0.0f;
-    };
-    
-    // Функция для парсинга int из JSON
-    auto parseJsonInt = [](const std::string& str, const std::string& key) -> int {
-        size_t pos = str.find("\"" + key + "\"");
-        if (pos != std::string::npos) {
-            pos = str.find(":", pos);
-            if (pos != std::string::npos) {
-                pos++;
-                while (pos < str.size() && (str[pos] == ' ' || str[pos] == '\t'))
-                    pos++;
-                return std::atoi(str.substr(pos).c_str());
-            }
-        }
-        return 0;
-    };
-    
+
     // Отображаем данные Indicators
     {
         std::lock_guard<std::mutex> lock(g_indicatorsMutex);
@@ -3958,9 +3456,9 @@ void RenderUI()
     if (g_followMode) {
         ImGui::PopStyleColor();
     }
-    
+
     ImGui::Spacing();
-    
+
     // Кнопка для очистки всех выделений и меток
     if (ImGui::Button(TR().Get("clear_tooltip").c_str(), ImVec2(-1, 0))) {
         g_selectedUnits.clear();
