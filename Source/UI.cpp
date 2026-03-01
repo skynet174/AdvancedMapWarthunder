@@ -59,6 +59,7 @@ static bool g_content2Visible = false; // Видимость чата (по ум
 static bool g_debugMode = false; // Режим отладки (клавиша D)
 static bool g_followMode = false; // Режим слежения (клавиша F)
 static float g_followZoomAdjust = 1.0f; // Корректировка зума при слежении
+static bool g_showETA = true; // Отображение ETA на расстояниях
 static bool g_wasDragging = false; // Флаг для отслеживания drag (чтобы не ставить метку после перемещения)
 
 // Параметры камеры для карты (pan & zoom) с инерцией
@@ -1836,6 +1837,11 @@ void RenderUI()
         }
     }
     
+    // Обработка клавиши E для переключения ETA
+    if (ImGui::IsKeyPressed(ImGuiKey_E, false)) {
+        g_showETA = !g_showETA;
+    }
+
     // Обработка клавиши C для очистки всех выделений и меток
     if (ImGui::IsKeyPressed(ImGuiKey_C, false)) {
         g_selectedUnits.clear();
@@ -2850,7 +2856,7 @@ void RenderUI()
                         DrawLineWithDistance(drawList, ctx,
                             playerUnit->pos.x, playerUnit->pos.y, unit.pos.x, unit.pos.y,
                             g_mapInfoData, IM_COL32(255, 255, 0, 180), IM_COL32(255, 255, 0, 255),
-                            2.0f, playerSpeedKmh);
+                            2.0f, g_showETA ? playerSpeedKmh : 0.0f);
                     }
                 }
             }
@@ -2890,7 +2896,7 @@ void RenderUI()
                         DrawLineWithDistance(drawList, ctx,
                             playerUnit->pos.x, playerUnit->pos.y, marker.pos.x, marker.pos.y,
                             g_mapInfoData, IM_COL32(255, 150, 0, 180), IM_COL32(255, 150, 0, 255),
-                            2.0f, playerSpeedKmh);
+                            2.0f, g_showETA ? playerSpeedKmh : 0.0f);
                     }
                 }
             }
@@ -3459,6 +3465,14 @@ void RenderUI()
 
     ImGui::Spacing();
 
+    // Кнопка для переключения ETA
+    std::string etaButtonText = g_showETA ? TR().Get("eta_on") : TR().Get("eta_off");
+    if (ImGui::Button(etaButtonText.c_str(), ImVec2(-1, 0))) {
+        g_showETA = !g_showETA;
+    }
+
+    ImGui::Spacing();
+
     // Кнопка для очистки всех выделений и меток
     if (ImGui::Button(TR().Get("clear_tooltip").c_str(), ImVec2(-1, 0))) {
         g_selectedUnits.clear();
@@ -3713,6 +3727,10 @@ void SaveSettings()
     // Видимость чата
     sprintf_s(buffer, "%d", g_content2Visible ? 1 : 0);
     WritePrivateProfileStringA("UI", "ChatVisible", buffer, configPath.c_str());
+
+    // ETA
+    sprintf_s(buffer, "%d", g_showETA ? 1 : 0);
+    WritePrivateProfileStringA("UI", "ShowETA", buffer, configPath.c_str());
 }
 
 // Загрузка настроек из файла
@@ -3831,5 +3849,8 @@ void LoadSettings()
     
     // Загружаем видимость чата
     g_content2Visible = GetPrivateProfileIntA("UI", "ChatVisible", 0, configPath.c_str()) != 0;
+
+    // Загружаем ETA
+    g_showETA = GetPrivateProfileIntA("UI", "ShowETA", 1, configPath.c_str()) != 0;
 }
 
