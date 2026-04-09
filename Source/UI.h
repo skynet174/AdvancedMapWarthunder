@@ -42,17 +42,17 @@ struct IndicatorsData {
 // Структура для данных state
 struct StateData {
     bool valid = false;
-    int altitude = 0; // H, m
-    int tas = 0; // TAS, km/h
-    int ias = 0; // IAS, km/h
-    float mach = 0.0f; // M
-    float aoa = 0.0f; // AoA, deg
-    float vy = 0.0f; // Vy, m/s
-    int fuel = 0; // Mfuel, kg
-    int fuel0 = 0; // Mfuel0, kg
-    int throttle1 = 0; // throttle 1, %
-    int rpm1 = 0; // RPM 1
-    float power1 = 0.0f; // power 1, hp
+    int altitude = 0;       // H, m
+    int tas = 0;            // TAS, km/h
+    int ias = 0;            // IAS, km/h
+    float mach = 0.0f;      // M
+    float aoa = 0.0f;       // AoA, deg
+    float vy = 0.0f;        // Vy, m/s
+    int fuel = 0;           // Mfuel, kg
+    int fuel0 = 0;          // Mfuel0, kg
+    int throttle1 = 0;      // throttle 1, %
+    int rpm1 = 0;           // RPM 1
+    float power1 = 0.0f;    // power 1, hp
 };
 
 // Структура для цели миссии
@@ -72,10 +72,10 @@ struct MissionData {
 // Структура для данных map_info
 struct MapInfoData {
     bool valid = false;
-    float gridSteps[2] = { 5000.0f, 5000.0f };
-    float gridZero[2] = { 0.0f, 0.0f };
-    float mapMin[2] = { -65536.0f, -65536.0f };
-    float mapMax[2] = { 65536.0f, 65536.0f };
+    ImVec2 gridSteps = ImVec2(5000.0f, 5000.0f);
+    ImVec2 gridZero;
+    ImVec2 mapMin = ImVec2(-65536.0f, -65536.0f);
+    ImVec2 mapMax = ImVec2(65536.0f, 65536.0f);
     int hudType = 0;
     int mapGeneration = 0;
 };
@@ -84,26 +84,25 @@ struct MapInfoData {
 struct MapObject {
     std::string type;
     std::string icon;
-    float x = 0.0f, y = 0.0f;           // Нормализованные координаты (0-1)
-    float dx = 0.0f, dy = 0.0f;         // Направление (для aircraft)
-    float sx = 0.0f, sy = 0.0f;         // Для линий (аэродром)
-    float ex = 0.0f, ey = 0.0f;
-    float r = 1.0f, g = 1.0f, b = 1.0f;  // Цвет (нормализованный 0-1)
-    std::string colorHash;               // Хеш цвета для идентификации (для aircraft)
+    ImVec2 pos;                         // Нормализованные координаты (0-1)
+    ImVec2 dir;                         // Направление (для aircraft)
+    ImVec2 lineStart;                   // Для линий (аэродром) - начало
+    ImVec2 lineEnd;                     // Для линий (аэродром) - конец
+    float r = 1.0f, g = 1.0f, b = 1.0f; // Цвет (нормализованный 0-1)
+    std::string colorHash;              // Хеш цвета для идентификации (для aircraft)
     bool isPlayer = false;
     bool initialized = false;
-    
+
     // Для отслеживания движения и предсказания позиции
-    float lastX = 0.0f, lastY = 0.0f;   // Последние координаты
-    float lastDx = 0.0f, lastDy = 0.0f;  // Последнее направление
-    float lastUpdateTime = 0.0f;         // Время последнего обновления
-    int missedUpdates = 0;               // Количество пропущенных обновлений
+    ImVec2 lastPos;                     // Последние координаты
+    ImVec2 lastDir;                     // Последнее направление
+    float lastUpdateTime = 0.0f;        // Время последнего обновления
+    int missedUpdates = 0;              // Количество пропущенных обновлений
 };
 
 // Структура для меток на карте
 struct MapMarker {
-    float x = 0.0f;  // Нормализованные координаты (0-1)
-    float y = 0.0f;
+    ImVec2 pos;  // Нормализованные координаты (0-1)
     unsigned char r = 255, g = 200, b = 0;  // Жёлтый по умолчанию
 };
 
@@ -125,9 +124,10 @@ extern std::vector<MapMarker> g_mapMarkers;
 extern std::vector<size_t> g_selectedUnits;
 // Структура для сохранения выбранных юнитов по координатам (для восстановления после пропажи)
 struct SelectedUnitInfo {
-    float x, y;           // Последние известные координаты
+    ImVec2 pos;             // Последние известные координаты
     std::string type, icon; // Тип и иконка для идентификации
-    float lastSeenTime;    // Время последнего обновления
+    std::string colorHash;  // Хеш цвета для идентификации
+    float lastSeenTime;     // Время последнего обновления
 };
 extern std::vector<SelectedUnitInfo> g_selectedUnitsBackup;
 extern std::mutex g_indicatorsMutex;

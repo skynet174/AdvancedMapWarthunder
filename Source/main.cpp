@@ -355,15 +355,29 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     // Загружаем symbols_skyquake.ttf как дополнительный шрифт (не дефолтный)
     const unsigned char* fontData = FontData::GetData();
     size_t fontDataSize = FontData::GetSize();
-    
+
     if (fontData && fontDataSize > 0) {
         // Загружаем шрифт из памяти как дополнительный
+        // - Базовые латинские символы (0x0020-0x00FF) — для fallback (первый символ иконки)
+        // - Box Drawing (U+2500-U+257F) — основные иконки техники, точек захвата и т.д.
+        // - Block Elements (U+2580-U+259F) — bombing_point inner символ (U+2591)
+        // - Geometric Shapes (U+25A0-U+25FF) — respawn_base, bombing_point marker, default fallback
+        static const ImWchar iconGlyphRanges[] = {
+            0x0020, 0x00FF, // Базовые латинские
+            0x2500, 0x25FF, // Box Drawing + Block Elements + Geometric Shapes
+            0,
+        };
+
+        // AddFontFromMemoryTTF принимает владение указателем, поэтому копируем данные
+        void* fontDataCopy = IM_ALLOC(fontDataSize);
+        memcpy(fontDataCopy, fontData, fontDataSize);
+
         g_customFont = io.Fonts->AddFontFromMemoryTTF(
-            const_cast<unsigned char*>(fontData), 
+            fontDataCopy, 
             static_cast<int>(fontDataSize), 
             16.0f, 
             nullptr, 
-            io.Fonts->GetGlyphRangesDefault() // Базовые символы для custom font
+            iconGlyphRanges
         );
     }
     
